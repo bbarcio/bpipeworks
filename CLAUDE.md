@@ -75,6 +75,20 @@ Live: https://bbarcio.github.io/bpipeworks/
   Game over: Cross/Options. Touch controls hide while a pad was used in the last 20s; any touch brings them back.
 - Test note: Node 21+ has a read-only global `navigator`; fake it with Object.defineProperty in harnesses.
 
+## 2-player co-op (v0.12.0)
+- Simultaneous co-op, separate scores/lives/1UP. `players[0..1]` (each has `input`, `score`, `lives`, `lift`, `stun`,
+  `inGame`, `out`); `inPlay()` / `alivePlayers()` helpers. `twoP` chosen on title (PLAYERS chip, Square on pad,
+  1/2 keys; saved `pipeworks.players`; `?players=2`). Points go to whoever earned them (`addScore(n,x,y,p)`).
+- Input: touch always = P1. `PAD.slot[n]` = gamepad index per player; a lone pad = P2, two pads = first P1/second P2.
+  Keyboard 2P: P1 arrows + Space/Up, P2 A/D + W/Z/X. Touch controls stay visible in 2P while P1 has no pad.
+- Bumping a girder under the other worker dazes him (`stunPlayer`, `stunTime` 50f, no control, never deadly).
+  Workers are solid side to side (`separatePlayers` shoves). Green spark targets a random living worker.
+- One worker dying doesn't wipe sparks/icicles; only when nobody is left standing (then world freezes like 1P).
+  Out of lives = `out`; game over when both are out. 2P respawn lifts at x 116 / 140.
+- P2 art = WORKER2 with WHITE shirt + WHITE hat (`WORKER_P2`, pixel `WPAL2`/`SPR2`). Worker drawing takes a palette
+  (`WORKER2.draw(c, pose, pal)`) so new variants (planned: a female worker) are easy.
+- 1P must stay identical: verify with a frame-by-frame trace hash of a scripted 1P session before/after changes.
+
 ## Controls (Bernie's preference)
 - LEFT thumb: fixed horizontal joystick (base never moves; `STICK_DEAD` dead zone).
   Tablets (min screen side >= 600) get a 170px left gutter and a bigger stick; phones use 100px.

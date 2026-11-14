@@ -84,7 +84,7 @@
    v0.3: phase schedule, Pincer crabs, coin drops, bonus coin round,
          Jolt block (3-use shockwave), 1-up at 20,000
    ===================================================================== */
-const VERSION = '0.11.0';
+const VERSION = '0.12.0';
 // Arcade CRTs showed 256x224 on a 4:3 tube, so pixels were ~7:6 wide. ?square for square pixels.
 const PIXEL_ASPECT = /[?&]square/.test(location.search) ? 1 : 7 / 6;
 const W = 256, H = 224;
@@ -150,6 +150,7 @@ const TUNE = {
   coinSpeed: 0.8,
   bonusTime: [20, 15],               // seconds: first bonus round, later ones
   extraLifeAt: 20000,
+  stunTime: 50, stunVy: 2.4,          // 2P: bumped from below by the other worker (frames dazed, pop-up speed)
 };
 window.TUNE = TUNE;
 
@@ -158,7 +159,7 @@ const C = {
   girder: '#3e5fa8', girderHi: '#86a8ff', girderLo: '#24386e', girderSeam: '#1b2a52', rivet: '#c9d8ff',
   brick: '#8c3a1c', brickHi: '#c25a2a', mortar: '#2a0f05',
   pipe: '#c8753a', pipeHi: '#f2ad6c', pipeLo: '#7a3e17', pipeMouth: '#140700',
-  hud: '#ffffff', hudP1: '#ff9a1f', hudTop: '#ff6a5a',
+  hud: '#ffffff', hudP1: '#ff9a1f', hudP2: '#bfe4ff', hudTop: '#ff6a5a',
   coin: '#ffd23f', coinLo: '#b8860b', coinHi: '#fff6c0',
   jolt: '#2c3550', joltEdge: '#9fb3e8', bolt: '#ffe14a',
 };
@@ -208,7 +209,12 @@ function layoutButtons() {
 }
 
 // ---------- Input ----------
-const input = { left: false, right: false, jumpHeld: false, jumpPressed: false };
+const input = { left: false, right: false, jumpHeld: false, jumpPressed: false };    // Player 1
+const input2 = { left: false, right: false, jumpHeld: false, jumpPressed: false };   // Player 2
+// 2-player co-op (v0.12.0): chosen on the title screen, saved; ?players=2 / ?players=1 override
+let twoP = false;
+try { twoP = localStorage.getItem('pipeworks.players') === '2'; } catch (e) {}
+{ const m = location.search.match(/[?&]players=([12])/); if (m) twoP = m[1] === '2'; }
 const keys = {};
 const touches = new Map();
 let startTap = false;
@@ -238,6 +244,7 @@ function onTouch(e) {
       PAD.lastUsed = -1e9;                         // touching the screen: show touch controls again
       const zone = zoneFor(t.clientX);
       if (zone === 'game' && inHDChip(t.clientX, t.clientY)) { toggleHD(); continue; }
+      if (zone === 'game' && inChip(PLAYERS_CHIP, t.clientX, t.clientY)) { togglePlayers(); continue; }
       { const ph = zone === 'game' ? phaseChipHit(t.clientX, t.clientY) : null;
         if (ph !== null) { if (ph) setStartPhase(startPhase + ph); continue; } }
       const nt = { x: t.clientX, y: t.clientY, zone, ax: buttons.stick.cx };
@@ -258,15 +265,22 @@ for (const ev of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
 }
 cvs.addEventListener('mousedown', e => { unlockAudio();
   const ph = phaseChipHit(e.clientX, e.clientY);
-  if (inHDChip(e.clientX, e.clientY)) toggleHD(); else if (ph !== null) { if (ph) setStartPhase(startPhase + ph); } else startTap = true; });
+  if (inHDChip(e.clientX, e.clientY)) toggleHD(); else if (inChip(PLAYERS_CHIP, e.clientX, e.clientY)) togglePlayers(); else if (ph !== null) { if (ph) setStartPhase(startPhase + ph); } else startTap = true; });
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 const JUMP_KEYS = ['Space', 'KeyZ', 'ArrowUp', 'KeyW', 'KeyX'];
+// 2-player keyboard split: P1 = arrows + Space/Up/'/', P2 = A D + W/Z/X
+const P1_JUMP_KEYS = ['Space', 'ArrowUp', 'Slash'], P2_JUMP_KEYS = ['KeyW', 'KeyZ', 'KeyX'];
 window.addEventListener('keydown', e => {
   unlockAudio();
-  if (JUMP_KEYS.includes(e.code) && !e.repeat) input.jumpPressed = true;
+  if (!e.repeat) {
+    if (!twoP) { if (JUMP_KEYS.includes(e.code)) input.jumpPressed = true; }
+    else if (P1_JUMP_KEYS.includes(e.code)) input.jumpPressed = true;
+    else if (P2_JUMP_KEYS.includes(e.code)) input2.jumpPressed = true;
+  }
   if (e.code === 'Enter' || e.code === 'Space') startTap = true;
   if (e.code === 'KeyH' && !e.repeat && state === 'title') toggleHD();
+  if (state === 'title' && (e.code === 'Digit1' || e.code === 'Digit2') && twoP !== (e.code === 'Digit2')) togglePlayers();
   if (state === 'title' && (e.code === 'BracketLeft' || e.code === 'Minus')) setStartPhase(startPhase - 1);
   if (state === 'title' && (e.code === 'BracketRight' || e.code === 'Equal')) setStartPhase(startPhase + 1);
   keys[e.code] = true;
@@ -277,53 +291,81 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 // ---------- Game controller (PS5 DualSense, Xbox, MFi...) via the Gamepad API, "standard" mapping ----------
 // Move: left stick or d-pad.  Jump: Cross (X) or Circle.  Start / Back to work: Cross or Options.
 // Title screen: L1 / R1 = starting phase, Triangle = art style.
-const PAD = { dead: 0.35, prev: [], lastUsed: -1e9 };
+// 1 player: every controller drives Player 1. 2 players: PAD.slot[n] = the gamepad index that drives player n.
+// A lone controller goes to Player 2 (Player 1 uses touch or keyboard); with two, the first is P1, the second P2.
+const PAD = { dead: 0.35, prev: [], lastUsed: -1e9, slot: [null, null] };
+function assignPads(idx) {
+  for (const s of [0, 1]) if (PAD.slot[s] !== null && !idx.includes(PAD.slot[s])) PAD.slot[s] = null;   // unplugged
+  for (const i of idx) {
+    if (PAD.slot.includes(i)) continue;
+    if (PAD.slot[1] === null && (idx.length === 1 || PAD.slot[0] !== null)) PAD.slot[1] = i;
+    else if (PAD.slot[0] === null) PAD.slot[0] = i;
+  }
+}
 function readPad() {
-  const out = { left: false, right: false, jump: false, pressed: new Set() };
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  for (const g of pads || []) {
-    if (!g || !g.connected) continue;
+  const blank = () => ({ left: false, right: false, jump: false, pressed: new Set() });
+  const out = [blank(), blank()], menu = new Set();      // per player, plus any-pad presses for menus
+  const pads = [...(navigator.getGamepads ? navigator.getGamepads() || [] : [])].filter(g => g && g.connected);
+  assignPads(pads.map(g => g.index));
+  for (const g of pads) {
+    const owner = !twoP ? 0 : PAD.slot.indexOf(g.index);
+    const o = out[owner] || blank();                     // an unassigned 3rd pad still works the menus
     const btn = i => !!(g.buttons[i] && g.buttons[i].pressed);
     const ax = g.axes[0] || 0;
-    if (ax < -PAD.dead || btn(14)) out.left = true;
-    if (ax > PAD.dead || btn(15)) out.right = true;
-    if (btn(0) || btn(1)) out.jump = true;
+    if (ax < -PAD.dead || btn(14)) o.left = true;
+    if (ax > PAD.dead || btn(15)) o.right = true;
+    if (btn(0) || btn(1)) o.jump = true;
     const prev = PAD.prev[g.index] || [];
-    g.buttons.forEach((b, i) => { if (b.pressed && !prev[i]) out.pressed.add(i); });
+    g.buttons.forEach((b, i) => { if (b.pressed && !prev[i]) { o.pressed.add(i); menu.add(i); } });
     PAD.prev[g.index] = g.buttons.map(b => b.pressed);
-    if (out.left || out.right || out.jump || out.pressed.size || Math.abs(ax) > PAD.dead) PAD.lastUsed = frameCount;
+    if (o.left || o.right || o.jump || o.pressed.size || Math.abs(ax) > PAD.dead) PAD.lastUsed = frameCount;
   }
-  return out;
+  return { out, menu };
 }
 const padActive = () => frameCount - PAD.lastUsed < 60 * 20;   // used in the last 20s: hide the touch controls
+// Touch controls show unless a controller is in use, except in 2P when no controller belongs to Player 1
+const showTouch = () => isTouch && (!padActive() || (twoP && PAD.slot[0] === null));
 window.addEventListener('gamepadconnected', () => { PAD.lastUsed = frameCount; });
 
 function pollInput() {
   const pad = readPad();
-  if (pad.pressed.size) {
+  if (pad.menu.size) {
     unlockAudio();
-    const P = i => pad.pressed.has(i);
+    const P = i => pad.menu.has(i);
     if (state === 'title') {
       if (P(4)) setStartPhase(startPhase - 1);
       if (P(5)) setStartPhase(startPhase + 1);
       if (P(3)) toggleHD();
+      if (P(2)) togglePlayers();                       // Square: 1 or 2 players
       if (P(0) || P(9)) startTap = true;
     } else if (state === 'mail') {
       if (P(0) || P(9)) closeMail();
     } else if (state === 'gameover') {
       if (P(0) || P(9)) startTap = true;
-    } else if (state === 'play' && (P(0) || P(1))) input.jumpPressed = true;
+    } else if (state === 'play') {
+      [input, input2].forEach((inp, n) => { const q = pad.out[n].pressed; if (q.has(0) || q.has(1)) inp.jumpPressed = true; });
+    }
   }
-  let tl = pad.left, tr = pad.right, tj = pad.jump;
-  for (const t of touches.values()) {
+  let tl = pad.out[0].left, tr = pad.out[0].right, tj = pad.out[0].jump;
+  for (const t of touches.values()) {                  // touch controls always drive Player 1
     if (t.zone === 'stick') {
       const dx = t.x - t.ax;
       if (dx < -stickDead()) tl = true; else if (dx > stickDead()) tr = true;
     } else if (t.zone === 'jump') tj = true;
   }
-  input.left = tl || !!keys.ArrowLeft || !!keys.KeyA;
-  input.right = tr || !!keys.ArrowRight || !!keys.KeyD;
-  input.jumpHeld = tj || JUMP_KEYS.some(k => keys[k]);
+  if (!twoP) {
+    input.left = tl || !!keys.ArrowLeft || !!keys.KeyA;
+    input.right = tr || !!keys.ArrowRight || !!keys.KeyD;
+    input.jumpHeld = tj || JUMP_KEYS.some(k => keys[k]);
+  } else {
+    input.left = tl || !!keys.ArrowLeft;
+    input.right = tr || !!keys.ArrowRight;
+    input.jumpHeld = tj || P1_JUMP_KEYS.some(k => keys[k]);
+    const p2 = pad.out[1];
+    input2.left = p2.left || !!keys.KeyA;
+    input2.right = p2.right || !!keys.KeyD;
+    input2.jumpHeld = p2.jump || P2_JUMP_KEYS.some(k => keys[k]);
+  }
 }
 
 // ---------- Audio ----------
@@ -557,6 +599,7 @@ const sfx = {
   spawn() { tone(70, 150, 0.10, 'triangle', 0.18); tone(150, 90, 0.10, 'triangle', 0.14, 0.1); },
   flip()  { tone(1100, 260, 0.12, 'p25', 0.10); tone(260, 520, 0.06, 'p25', 0.07, 0.12); },
   unflip(){ tone(260, 700, 0.10, 'p25', 0.09); },
+  stunned() { tone(620, 260, 0.22, 'triangle', 0.09); tone(930, 390, 0.18, 'sine', 0.04, 0.05); },   // 2P: dazed by a bump
   anger() { for (let i = 0; i < 4; i++) tone(i % 2 ? 900 : 500, null, 0.04, 'p12', 0.08, i * 0.045); },
   wake()  { for (let i = 0; i < 6; i++) tone(320 + i * 90, null, 0.035, 'p50', 0.06, i * 0.04); },
   kick()  { noise(0.05, 0.35, 2200); tone(380, 1900, 0.14, 'p25', 0.10, 0.02); },
@@ -630,6 +673,14 @@ const SPR = {
 };
 const BURNT_PAL = { O: '#2e2723', o: '#1b1613', W: '#4a3f37', S: '#2a2420', G: '#ffffff', g: '#0d0b0a',
                     K: '#0d0b0a', T: '#25201c', t: '#15120f', Y: '#3d2c1c', B: '#0f0c0a' };
+// Player 2 pixel sprites: white hard hat (the pixel worker has no separate shirt color)
+const WPAL2 = { ...WPAL, O: '#e8eaf0', o: '#a4a9b6', W: '#ffffff' };
+const SPR2 = {
+  stand: makeSprite([...HEAD, ...TORSO, ...LEGS_STAND], WPAL2, true),
+  walkA: makeSprite([...HEAD, ...TORSO, ...LEGS_APART], WPAL2),
+  walkB: makeSprite([...HEAD, ...TORSO, ...LEGS_MID], WPAL2),
+  jump:  makeSprite([...HEAD, ...TORSO_JUMP, ...LEGS_APART], WPAL2),
+};
 SPR.burnt = makeSprite([...HEAD, ...TORSO, ...LEGS_STAND], BURNT_PAL);
 SPR.burntBlink = makeSprite([...HEAD, ...TORSO, ...LEGS_STAND], { ...BURNT_PAL, G: '#2a2420' });
 
@@ -762,7 +813,7 @@ function overlapX(p, pl) {
 const playerOnly = pl => pl.temp || pl.jolt;
 function supported(e, min) {
   for (const pl of level.plats) {
-    if (playerOnly(pl) && e !== player) continue;
+    if (playerOnly(pl) && !e.isPlayer) continue;
     if (Math.abs(pl.y - e.y) < 0.5 && overlapX(e, pl) >= min) return true;
   }
   return false;
@@ -781,7 +832,7 @@ function snapOnto(p, pl, min) {
 function findLanding(e, oldBot, min, fromAbove = false) {
   let land = null;
   for (const pl of level.plats) {
-    if (playerOnly(pl) && e !== player) continue;
+    if (playerOnly(pl) && !e.isPlayer) continue;
     if ((fromAbove ? oldBot < pl.y - 0.01 : oldBot <= pl.y + 0.01) && e.y >= pl.y && overlapX(e, pl) >= min) {
       if (!land || pl.y < land.y) land = pl;
     }
@@ -795,18 +846,26 @@ function touching(a, b, shrink) {
 
 // ---------- Game state ----------
 let state = 'title', stateT = 0;
-let frameCount = 0, score = 0, lives = 3, phase = 1, extraGiven = false;
+let frameCount = 0, phase = 1;
 let banner = 0, bannerLines = ['', ''], clearT = 0, shakeT = 0, coinSide = 1;
 let bonus = null;              // { t, got, total, first }
 let topScore = 0;
 try { topScore = parseInt(localStorage.getItem('pipeworks.top') || '0', 10) || 0; } catch (e) {}
 
-const player = {
+// Each worker keeps his own score, lives, 1UP and respawn lift. players[1] only plays in 2-player games.
+// inGame = joined this game; out = no lives left (gone for the rest of the game).
+const makePlayer = (id, inp) => ({
+  id, isPlayer: true, input: inp, inGame: id === 0, out: false,
+  score: 0, lives: 3, extraGiven: false, lift: null, stun: 0,
   x: 128, y: 200, w: 10, h: 16, vx: 0, vy: 0, face: 1,
   onGround: true, coyote: 0, jumpBuf: 0, skid: false, anim: 0, lastStep: 0,
   dead: false, deathT: 0, invuln: 0,
-};
-let lift = null;
+});
+const players = [makePlayer(0, input), makePlayer(1, input2)];
+const inPlay = () => players.filter(p => p.inGame && !p.out);                 // includes a worker mid-death
+const alivePlayers = () => players.filter(p => p.inGame && !p.out && !p.dead);
+const spawnX = p => (twoP ? (p.id ? 140 : 116) : 128);                       // 2P: side by side
+const hiScore = () => Math.max(...players.map(p => p.score));
 const enemies = [];
 const spawnQueue = [];         // { kind, side, delay, level }
 const coins = [];              // moving drop coins and static bonus coins
@@ -846,10 +905,12 @@ const phaseSubtitle = n => ({
 
 function startGame() {
   state = 'play';
-  score = 0; lives = 3; extraGiven = false;
-  Object.assign(player, { x: 128, y: FLOOR_Y, vx: 0, vy: 0, face: 1, onGround: true,
-                          coyote: 0, jumpBuf: 0, dead: false, invuln: 0 });
-  removeLift();
+  for (const p of players) {
+    removeLift(p);
+    Object.assign(p, { inGame: p.id === 0 || twoP, out: false, score: 0, lives: 3, extraGiven: false, stun: 0,
+                       x: twoP ? (p.id ? 152 : 104) : 128, y: FLOOR_Y, vx: 0, vy: 0, face: p.id ? -1 : 1, onGround: true,
+                       coyote: 0, jumpBuf: 0, dead: false, invuln: 0 });
+  }
   setJoltHits(3);
   sfx.start();
   beginPhase(startPhase, true);
@@ -887,12 +948,15 @@ function beginPhase(n, gameStart = false) {
 function showBanner(a, b, t = 150) { bannerLines = [a, b]; banner = t; }
 
 // ---------- Player ----------
-function updatePlayer() {
-  const p = player, T = TUNE;
-  const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+function updatePlayer(p) {
+  const T = TUNE, input = p.input;
+  const dazed = p.stun > 0;                          // bumped by the other worker: no control for a moment
+  if (dazed) p.stun--;
+  const dir = dazed ? 0 : (input.right ? 1 : 0) - (input.left ? 1 : 0);
   if (p.invuln > 0) p.invuln--;
 
-  if (input.jumpPressed) p.jumpBuf = T.jumpBuffer;
+  if (dazed) p.jumpBuf = 0;
+  else if (input.jumpPressed) p.jumpBuf = T.jumpBuffer;
   else if (p.jumpBuf > 0) p.jumpBuf--;
 
   const wasSkid = p.skid;
@@ -974,14 +1038,36 @@ function checkHead(p, oldTop) {
   if (!hit) return;
   p.y = hit.y + hit.h + p.h;
   p.vy = TUNE.bonkVy;
-  if (hit.jolt) { triggerJolt(); return; }
+  if (hit.jolt) { triggerJolt(p); return; }
   let bx = p.x, bestD = Infinity;
   for (const off of OFFS) {
     const cx = clamp(p.x + off, hit.x, hit.x + hit.w);
     const d = Math.abs(cx - (p.x + off));
     if (d < bestD) { bestD = d; bx = cx; }
   }
-  triggerBump(hit, bx);
+  triggerBump(hit, bx, p);
+}
+
+// ---------- 2 players: bumping and shoving each other ----------
+// A bump under the other worker pops him up, dazed (no control) for TUNE.stunTime frames. Never deadly.
+function stunPlayer(q, bx) {
+  q.onGround = false; q.vy = -TUNE.stunVy; q.coyote = 0; q.jumpBuf = 0;
+  q.vx = (wrapDx(bx, q.x) >= 0 ? 1 : -1) * 0.6;
+  q.stun = TUNE.stunTime;
+  sfx.stunned();
+}
+// Workers are solid side to side: walking into the other one pushes him (each moves half the overlap).
+function separatePlayers() {
+  const [a, b] = alivePlayers();
+  if (!b) return;
+  const dx = wrapDx(a.x, b.x);
+  const ov = (a.w + b.w) / 2 - Math.abs(dx);
+  const vOv = Math.min(a.y, b.y) - Math.max(a.y - a.h, b.y - b.h);   // vertical overlap of the bodies
+  if (ov <= 0 || vOv < 6) return;                                     // passing over/under each other is fine
+  const s = dx >= 0 ? 1 : -1;
+  a.x = wrapX(a.x - s * ov / 2); b.x = wrapX(b.x + s * ov / 2);
+  resolveX(a); resolveX(b);
+  a.x = wrapX(a.x); b.x = wrapX(b.x);
 }
 
 function onIce(p) {
@@ -991,21 +1077,23 @@ function onIce(p) {
 
 // ---------- Death & respawn ----------
 const smoke = [];   // soft puffs (burnt worker); drawn as circles in HD, squares in pixel mode
-function killPlayer(cause = 'critter') {
-  const p = player;
-  p.dead = true; p.deathT = 0; p.vx = 0; p.vy = 0; p.deathCause = cause;
-  lives--;
-  removeLift();
-  sparks.length = 0; icicles.length = 0;
+// Returns true when this death wiped the sparks/icicles (only once nobody is left standing, so in
+// 2P a death doesn't hand the survivor a free hazard clear).
+function killPlayer(p, cause = 'critter') {
+  p.dead = true; p.deathT = 0; p.vx = 0; p.vy = 0; p.deathCause = cause; p.stun = 0;
+  p.lives--;
+  removeLift(p);
+  const wipe = alivePlayers().length === 0;
+  if (wipe) { sparks.length = 0; icicles.length = 0; }
   if (cause === 'spark') {
     sfx.burn();
     for (let k = 0; k < 14; k++) particles.push({ x: p.x + Math.random() * 10 - 5, y: p.y - Math.random() * 16,
       vx: Math.random() * 2.4 - 1.2, vy: -Math.random() * 2, life: 16 + Math.random() * 12, color: k % 2 ? '#ffb040' : '#ff5a1a' });
   } else sfx.die();
+  return wipe;
 }
 const BURN_HOLD = 64;   // frames the crispy worker stands there before dropping
-function updateDeath() {
-  const p = player;
+function updateDeath(p) {
   p.deathT++;
   if (p.deathCause === 'spark') {
     if (p.deathT <= BURN_HOLD) {
@@ -1022,27 +1110,30 @@ function updateDeath() {
     if (p.deathT > 45) { p.vy += 0.18; p.y += p.vy; }
   }
   if (p.deathT > 60 && p.y - p.h > H + 10) {
-    if (lives > 0) respawn(); else gameOver();
+    if (p.lives > 0) respawn(p);
+    else { p.out = true; if (!inPlay().length) gameOver(); }   // 2P: the other worker plays on
   }
 }
-function respawn() {
-  Object.assign(player, { x: 128, y: 40, vx: 0, vy: 0, face: 1, onGround: true, coyote: 0,
-                          jumpBuf: 0, dead: false, invuln: TUNE.invuln });
-  lift = { x: 120, y: 40, w: 16, h: 4, temp: true, t: TUNE.liftTime };
-  level.plats.push(lift);
+function respawn(p) {
+  const x = spawnX(p);
+  Object.assign(p, { x, y: 40, vx: 0, vy: 0, face: p.id && twoP ? -1 : 1, onGround: true, coyote: 0,
+                     jumpBuf: 0, dead: false, stun: 0, invuln: TUNE.invuln });
+  p.lift = { x: x - 8, y: 40, w: 16, h: 4, temp: true, t: TUNE.liftTime };
+  level.plats.push(p.lift);
 }
-function removeLift() {
-  if (!lift) return;
-  const i = level.plats.indexOf(lift);
+function removeLift(p) {
+  if (!p.lift) return;
+  const i = level.plats.indexOf(p.lift);
   if (i >= 0) level.plats.splice(i, 1);
-  lift = null;
+  p.lift = null;
 }
-function updateLift() {
-  if (!lift) return;
-  if (--lift.t <= 0 || input.left || input.right || !player.onGround) removeLift();
+function updateLift(p) {
+  if (!p.lift) return;
+  if (--p.lift.t <= 0 || p.input.left || p.input.right || !p.onGround) removeLift(p);
 }
 function gameOver() {
   state = 'gameover'; stateT = 240;
+  const score = hiScore();
   if (score > topScore) {
     topScore = score;
     try { localStorage.setItem('pipeworks.top', String(topScore)); } catch (e) {}
@@ -1074,9 +1165,9 @@ function updateSpawns() {
 }
 
 // One hit from a girder bump or the Jolt block.
-function hitCritter(e, bx) {
+function hitCritter(e, bx, p) {                   // p = the worker who bumped (gets the points)
   if (e.state === 'kicked' || e.state === 'poof') return;
-  if (e.kind === 'slug') { poofSlug(e, true); return; }   // arcade: vanishes instead of flipping
+  if (e.kind === 'slug') { poofSlug(e, true, p); return; }   // arcade: vanishes instead of flipping
   e.onGround = false;
   if (e.state === 'flipped') {                     // hit again: back on its feet
     e.state = 'walk'; e.vx = 0; e.vy = -2.2;
@@ -1091,7 +1182,7 @@ function hitCritter(e, bx) {
   e.state = 'flipped'; e.angry = false; e.vy = -2.2;
   e.flipT = Math.max(240, TUNE.flipTime - (phase - 1) * 30);
   e.vx = (wrapDx(bx, e.x) >= 0 ? 1 : -1) * 0.4;
-  addScore(10, e.x, e.y - 12);
+  addScore(10, e.x, e.y - 12, p);
   sfx.flip();
 }
 
@@ -1113,12 +1204,12 @@ function clearHazards() {
   if (any) sfx.sparkOut();
 }
 
-function kickCritter(e) {
+function kickCritter(e, p) {
   e.state = 'kicked';
-  const d = wrapDx(player.x, e.x);
-  const dir = d === 0 ? player.face : Math.sign(d);
+  const d = wrapDx(p.x, e.x);
+  const dir = d === 0 ? p.face : Math.sign(d);
   e.vx = dir * 1.8; e.vy = -2.6; e.onGround = false;
-  addScore(800, e.x, e.y - 12);
+  addScore(800, e.x, e.y - 12, p);
   sfx.kick();
   if (targetsLeft(true) > 0) spawnCoin();
   else clearHazards();                             // last one: sparks, icicles and slugs fizzle out
@@ -1134,11 +1225,11 @@ function freezablePlatUnder(e) {
   for (const pl of level.plats) if (pl.freezable && Math.abs(pl.y - e.y) < 0.5 && overlapX(e, pl) >= e.w / 2) return pl;
   return null;
 }
-function poofSlug(e, scored) {
+function poofSlug(e, scored, p) {
   e.state = 'poof';
   for (let k = 0; k < 10; k++) particles.push({ x: e.x, y: e.y - 4, vx: Math.random() * 2.4 - 1.2, vy: -Math.random() * 1.8,
     life: 16 + Math.random() * 12, color: k % 2 ? '#e8fbff' : '#7fd0f0' });
-  if (scored) { addScore(500, e.x, e.y - 10); sfx.slugPop(); }
+  if (scored) { addScore(500, e.x, e.y - 10, p); sfx.slugPop(); }
 }
 let slugClock = 0, nextSlug = 0, slugSide = 1;
 function updateSlugSpawns() {
@@ -1295,8 +1386,9 @@ function spawnSpark(kind) {
                   age: 0, life: TUNE.sparkRedLife * 60, seed: Math.random() * 6 });
     redCount++;
   } else {
-    // the worker's level: the girder he stands on, or the next one below him
-    const lane = SPARK_LANES.find(y => y >= player.y - 0.5) || FLOOR_Y;
+    // the worker's level: the girder he stands on, or the next one below him (2P: one of the two, at random)
+    const live = alivePlayers(), t = live.length > 1 ? live[Math.floor(Math.random() * live.length)] : live[0];
+    const lane = (t && SPARK_LANES.find(y => y >= t.y - 0.5)) || FLOOR_Y;
     const left = sparkSide < 0;
     sparks.push({ kind, x: left ? -6 : W + 6, y: lane - 4, baseY: lane - 4, vx: (left ? 1 : -1) * 0.95,
                   vy: 0, age: 0, hop: 0, hopT: 0, life: 99999, seed: Math.random() * 6 });
@@ -1344,19 +1436,22 @@ function updateSparks() {
       if (s.landed > 0) s.landed--;
       if (s.age > s.life) { sparks.splice(i, 1); continue; }
     }
-    if (!player.dead && player.invuln <= 0 && Math.abs(player.x - s.x) < 7 &&
-        s.y + 3 > player.y - player.h + 2 && s.y - 3 < player.y - 1) { killPlayer('spark'); return; }
+    for (const p of alivePlayers()) {
+      if (p.invuln <= 0 && Math.abs(p.x - s.x) < 7 && s.y + 3 > p.y - p.h + 2 && s.y - 3 < p.y - 1) {
+        if (killPlayer(p, 'spark')) return;             // last worker standing: all sparks gone
+      }
+    }
   }
 }
 // Bump snuffs a spark only while it's touching down on that girder
-function snuffSparks(pl, x) {
+function snuffSparks(pl, x, p) {
   for (let i = sparks.length - 1; i >= 0; i--) {
     const s = sparks[i];
     const bottom = s.y + 3;
     const touching = s.kind === 'red' ? (bottom >= pl.y - 3 && bottom <= pl.y + 1) : (bottom >= pl.y - 3 && bottom <= pl.y + 1);
     if (Math.abs(x - s.x) < 14 && touching) {
       sparks.splice(i, 1);
-      addScore(s.kind === 'red' ? 1000 : 200, s.x, s.y - 8);
+      addScore(s.kind === 'red' ? 1000 : 200, s.x, s.y - 8, p);
       sfx.sparkOut();
       for (let k = 0; k < 8; k++) particles.push({ x: s.x, y: s.y, vx: Math.random() * 2 - 1, vy: -Math.random() * 1.6,
         life: 14 + Math.random() * 10, color: s.kind === 'red' ? '#ffb040' : '#9dff8a' });
@@ -1395,20 +1490,22 @@ function updateIcicles() {
           life: 14 + Math.random() * 10, color: k % 2 ? '#e8fbff' : '#a8e4f8' });
         sfx.shatter(); icicles.splice(i, 1); continue;
       }
-      const p = player;
-      if (!p.dead && p.invuln <= 0 && Math.abs(p.x - ic.x) < 4.5 && ic.y + ic.len > p.y - p.h + 1 && ic.y < p.y - 1) {
-        icicles.splice(i, 1); killPlayer(); return;
+      const p = alivePlayers().find(p => p.invuln <= 0 && Math.abs(p.x - ic.x) < 4.5 && ic.y + ic.len > p.y - p.h + 1 && ic.y < p.y - 1);
+      if (p) {
+        icicles.splice(i, 1);
+        if (killPlayer(p)) return;
       }
     }
   }
 }
 
 function checkPlayerEnemies() {
-  const p = player;
-  for (const e of enemies) {
-    if (e.state === 'kicked' || e.state === 'poof' || inPipe(e) || !touching(p, e, 2)) continue;
-    if (e.state === 'flipped') kickCritter(e);
-    else if (p.invuln <= 0) { killPlayer(); return; }
+  for (const p of alivePlayers()) {
+    for (const e of enemies) {
+      if (e.state === 'kicked' || e.state === 'poof' || inPipe(e) || !touching(p, e, 2)) continue;
+      if (e.state === 'flipped') kickCritter(e, p);
+      else if (p.invuln <= 0) { killPlayer(p); break; }
+    }
   }
 }
 
@@ -1418,10 +1515,10 @@ function spawnCoin() {
   coins.push({ x: coinSide < 0 ? 8 : W - 8, y: TOP_Y, w: 8, h: 8, vx: 0, vy: 0,
                dir: coinSide < 0 ? 1 : -1, onGround: true, spin: 0, fixed: false });
 }
-function collectCoin(i) {
+function collectCoin(i, p) {
   const c = coins[i];
   coins.splice(i, 1);
-  addScore(800, c.x, c.y - 10);
+  addScore(800, c.x, c.y - 10, p);
   sfx.coin();
   for (let k = 0; k < 6; k++) {
     particles.push({ x: c.x, y: c.y - 4, vx: Math.random() * 2 - 1, vy: -Math.random() * 1.5,
@@ -1441,15 +1538,20 @@ function updateCoins() {
       c.x = wrapX(c.x);
       fallAndLand(c, 4, 0.2);
     }
-    if (!player.dead && touching(player, c, 1)) collectCoin(i);
+    const p = alivePlayers().find(p => touching(p, c, 1));
+    if (p) collectCoin(i, p);
   }
 }
 
 // ---------- Bumps, Jolt, fx ----------
-function triggerBump(pl, x) {
+function triggerBump(pl, x, by) {                  // by = the worker whose head hit the girder
   bumps.push({ pl, x, t: 0 });
   sfx.bump();
-  snuffSparks(pl, x);
+  snuffSparks(pl, x, by);
+  for (const q of alivePlayers()) {                 // 2P: bumping under the other worker dazes him
+    if (q === by || !q.onGround || Math.abs(q.y - pl.y) > 0.5 || overlapX(q, pl) <= 0) continue;
+    if (Math.abs(wrapDx(x, q.x)) < TUNE.bumpReach) stunPlayer(q, x);
+  }
   for (let i = 0; i < 4; i++) {
     particles.push({ x: x + (Math.random() * 8 - 4), y: pl.y + pl.h, vx: Math.random() * 1.2 - 0.6,
                      vy: Math.random() * 0.6, life: 24 + Math.random() * 10 });
@@ -1457,26 +1559,26 @@ function triggerBump(pl, x) {
   for (const e of enemies) {
     if (e.state === 'kicked' || !e.onGround) continue;
     if (Math.abs(e.y - pl.y) > 0.5 || overlapX(e, pl) <= 0) continue;
-    if (Math.abs(wrapDx(x, e.x)) < TUNE.bumpReach && !inPipe(e)) hitCritter(e, x);
+    if (Math.abs(wrapDx(x, e.x)) < TUNE.bumpReach && !inPipe(e)) hitCritter(e, x, by);
   }
   for (let i = coins.length - 1; i >= 0; i--) {    // bumping under a coin collects it
     const c = coins[i];
-    if (Math.abs(c.y - pl.y) < 0.5 && overlapX(c, pl) > 0 && Math.abs(wrapDx(x, c.x)) < TUNE.bumpReach) collectCoin(i);
+    if (Math.abs(c.y - pl.y) < 0.5 && overlapX(c, pl) > 0 && Math.abs(wrapDx(x, c.x)) < TUNE.bumpReach) collectCoin(i, by);
   }
 }
-function triggerJolt() {
+function triggerJolt(p) {
   shakeT = 20; jolt.flash = 10;
   sfx.jolt();
-  for (const e of enemies) if (e.state !== 'kicked' && e.onGround && !inPipe(e)) hitCritter(e, e.x - e.dir);
-  for (let i = coins.length - 1; i >= 0; i--) if (!coins[i].fixed && coins[i].onGround) collectCoin(i);
+  for (const e of enemies) if (e.state !== 'kicked' && e.onGround && !inPipe(e)) hitCritter(e, e.x - e.dir, p);
+  for (let i = coins.length - 1; i >= 0; i--) if (!coins[i].fixed && coins[i].onGround) collectCoin(i, p);
   setJoltHits(jolt.hits - 1);
 }
-function addScore(n, x, y) {
-  score += n;
+function addScore(n, x, y, p) {                   // p = the worker who earned it
+  p.score += n;
   if (x !== undefined) popups.push({ x, y, text: String(n), life: 50 });
-  if (!extraGiven && score >= TUNE.extraLifeAt) {
-    extraGiven = true; lives++;
-    popups.push({ x: player.x, y: player.y - 20, text: '1UP', life: 80 });
+  if (!p.extraGiven && p.score >= TUNE.extraLifeAt) {
+    p.extraGiven = true; p.lives++;
+    popups.push({ x: p.x, y: p.y - 20, text: '1UP', life: 80 });
     sfx.oneup();
   }
 }
@@ -1519,7 +1621,7 @@ function checkPhase() {
     if (bonus.got < bonus.total && --bonus.t > 0) return;
     if (bonus.got === bonus.total) {
       const prize = bonus.first ? 5000 : 8000;
-      addScore(prize);
+      for (const p of inPlay()) addScore(prize, undefined, undefined, p);   // 2P: both workers get it
       showBanner('PERFECT!', `+${prize} bonus`, 170);
       sfx.perfect();
     } else {
@@ -1541,23 +1643,27 @@ function checkPhase() {
 function update() {
   frameCount++;
   pollInput();
-  if (view.portrait) { input.jumpPressed = false; startTap = false; return; }
+  if (view.portrait) { input.jumpPressed = input2.jumpPressed = false; startTap = false; return; }
   if (state === 'title') {
     if (startTap) startGame();
   } else if (state === 'play') {
     if (banner > 0) banner--;
-    if (player.dead) { updateDeath(); updateFx(); }
+    // The world runs while at least one worker is standing; when nobody is, it holds still (like 1P).
+    const live = alivePlayers();
+    for (const p of inPlay()) if (p.dead) updateDeath(p);
+    if (!live.length) updateFx();
     else {
-      updatePlayer();
-      updateLift();
+      for (const p of live) { updatePlayer(p); updateLift(p); }
+      separatePlayers();
+      const anyone = () => alivePlayers().length > 0;
       if (clearT === 0) {
         updateSpawns();
         updateSlugSpawns();
         updateEnemies();
         checkPlayerEnemies();
-        if (!player.dead) updateSparks();
-        if (!player.dead) updateIcicles();
-        if (!player.dead) updateMail();
+        if (anyone()) updateSparks();
+        if (anyone()) updateIcicles();
+        if (anyone()) updateMail();
       }
       updateCoins();
       updateFx();
@@ -1569,7 +1675,7 @@ function update() {
     if (--stateT <= 0 || (stateT < 150 && startTap)) state = 'title';
   }
   updateHum();
-  input.jumpPressed = false;
+  input.jumpPressed = input2.jumpPressed = false;
   startTap = false;
 }
 
@@ -1693,7 +1799,7 @@ function drawGirders() {
       if (pl.iced && Math.abs(tx + 4 - (pl.x + pl.w / 2)) <= pl.iceT * (pl.w / 2 + 8)) drawIceTile(tx, y, pl.y);   // spreads from the center
     }
   }
-  if (lift && (lift.t > 60 || frameCount % 8 < 4)) {
+  for (const { lift } of players) if (lift && (lift.t > 60 || frameCount % 8 < 4)) {
     ctx.fillStyle = th.hi; ctx.fillRect(lift.x, lift.y, lift.w, 1);
     ctx.fillStyle = th.base; ctx.fillRect(lift.x, lift.y + 1, lift.w, 3);
   }
@@ -1758,8 +1864,9 @@ let HD = true;                                   // HD is the default look
 try { if (localStorage.getItem('pipeworks.hd') === '0') HD = false; } catch (e) {}
 if (/[?&]pixel/.test(location.search)) HD = false;
 if (/[?&]hd/.test(location.search)) HD = true;
-const HD_CHIP = { x: W / 2 - 80, y: 191, w: 72, h: 13 };   // ART toggle button on the title screen
-const PHASE_CHIP = { x: W / 2 + 8, y: 191, w: 72, h: 13 };  // DEV start-phase picker: left third = down, right third = up
+const HD_CHIP = { x: W / 2 - 98, y: 191, w: 60, h: 13 };   // ART toggle button on the title screen
+const PLAYERS_CHIP = { x: W / 2 - 30, y: 191, w: 60, h: 13 }; // 1 / 2 PLAYERS toggle
+const PHASE_CHIP = { x: W / 2 + 38, y: 191, w: 60, h: 13 }; // DEV start-phase picker: left third = down, right third = up
 function setStartPhase(n) {
   startPhase = ((n - 1 + PHASE_PICK_MAX) % PHASE_PICK_MAX) + 1;    // wraps 30 -> 1 and 1 -> 30
   try { localStorage.setItem('pipeworks.startPhase', String(startPhase)); } catch (e) {}
@@ -1779,10 +1886,16 @@ function toggleHD() {
   try { localStorage.setItem('pipeworks.hd', HD ? '1' : '0'); } catch (e) {}
   sfx.coin();
 }
-function inHDChip(clientX, clientY) {
+function inChip(b, clientX, clientY) {
   if (state !== 'title') return false;
   const lx = (clientX - view.ox) / view.sx, ly = (clientY - view.oy) / view.sy;
-  return lx >= HD_CHIP.x - 4 && lx <= HD_CHIP.x + HD_CHIP.w + 4 && ly >= HD_CHIP.y - 4 && ly <= HD_CHIP.y + HD_CHIP.h + 5;
+  return lx >= b.x - 3 && lx <= b.x + b.w + 3 && ly >= b.y - 4 && ly <= b.y + b.h + 5;
+}
+const inHDChip = (clientX, clientY) => inChip(HD_CHIP, clientX, clientY);
+function togglePlayers() {
+  twoP = !twoP;
+  try { localStorage.setItem('pipeworks.players', twoP ? '2' : '1'); } catch (e) {}
+  sfx.coin();
 }
 function wrapDraw(x, half, fn) {
   fn(x);
@@ -1821,8 +1934,9 @@ function line(c, p, w, col = OUT) { c.beginPath(); c.moveTo(p[0], p[1]); for (le
 const limb = (c, p, w, col) => { line(c, p, w + 0.9); line(c, p, w, col); };
 const dot = (c, x, y, r, col) => { c.beginPath(); c.arc(x, y, r, 0, TAU); c.fillStyle = col; c.fill(); };
 const shine = (c, x, y, rx, ry, a = 0.35) => { c.beginPath(); c.ellipse(x, y, rx, ry, -0.3, 0, TAU); c.fillStyle = `rgba(255,255,255,${a})`; c.fill(); };
-const COL = { suit: '#2a4a96', suitD: '#1a3268', suitL: '#3a62b8', shirt: '#7a3fb0', shirtD: '#56288a', skin: '#f2b98a',
+const COL1 = { suit: '#2a4a96', suitD: '#1a3268', suitL: '#3a62b8', shirt: '#7a3fb0', shirtD: '#56288a', skin: '#f2b98a',
               glove: '#ffd23f', gloveD: '#d4a820', boot: '#7a4520', bootD: '#4e2a12', hat: '#6c36a2', hatD: '#4a2280', hatL: '#9466cc', hair: '#5a3a24', hairL: '#7a5236' };
+let COL = COL1;                                            // palette in use for the current draw (see draw below)
 // Torso silhouette: flat back, round butt (low, behind), round belly (front)
 function torsoPath(c) {
   c.moveTo(-2.15, -12.8);                                  // back of shoulders (v0.8.2: rear pulled in 33%)
@@ -1899,12 +2013,16 @@ const hatC = c => {                                        // C: purple knit bea
   shape(c, () => rr(c, -2.9, -18.2, 7.4, 1.5, 0.6), COL.hatD, 0.7);
   for (let x = -2.2; x < 4.3; x += 0.9) line(c, [x, -18.0, x, -16.9], 0.3, COL.hat);   // knit ribs
   shine(c, -0.4, -19.4, 1.1, 0.4, 0.35); };
-  return { draw: (c, pose) => worker(c, hatB, pose) };
+  // pal: a palette like COL1 (2P worker, later variants); omitted = Player 1's colors
+  return { COL1, draw: (c, pose, pal) => { COL = pal || COL1; worker(c, hatB, pose); COL = COL1; } };
 })();
+// Player 2 (v0.12.0): same worker, WHITE shirt and WHITE hard hat (user's pick). Gray shading keeps the round look.
+const WORKER_P2 = { ...WORKER2.COL1, shirt: '#eef0f5', shirtD: '#b8bdca', hat: '#f2f3f7', hatD: '#c3c8d4', hatL: '#d2d6e0' };
+const WORKER_PALS = [WORKER2.COL1, WORKER_P2];
 // HD worker: flat purple hard hat + goggles, purple shirt, dark blue overalls, round belly + butt, flat back
-function workerHD(face, swing, air, armUp) {
+function workerHD(face, swing, air, armUp, pal) {
   ctx.save(); ctx.scale(face, 1);
-  WORKER2.draw(ctx, { swing, air, armUp });
+  WORKER2.draw(ctx, { swing, air, armUp }, pal);
   ctx.restore();
 }
 
@@ -2105,12 +2223,12 @@ function updateMail() {
     if (++b.passes >= MAIL.passes) { mailBird = null; mailAt = -1; return; }
     b.dir = -b.dir; newMailLane(b);
   }
-  const p = player;
-  if (!p.dead && Math.abs(p.x - b.x) < 11 && p.y - p.h < b.y + 11 && p.y > b.y - 5) catchMail();
+  const p = alivePlayers().find(p => Math.abs(p.x - b.x) < 11 && p.y - p.h < b.y + 11 && p.y > b.y - 5);
+  if (p) catchMail(p);
 }
-function catchMail() {
+function catchMail(p) {
   const b = mailBird; mailBird = null; mailAt = -1; mailDelivered = true;
-  addScore(MAIL.points, b.x, b.y - 8);
+  addScore(MAIL.points, b.x, b.y - 8, p);
   mailSfx.catch();
   for (let k = 0; k < 14; k++) particles.push({ x: b.x, y: b.y + 6, vx: Math.random() * 2.4 - 1.2, vy: -Math.random() * 2,
     life: 18 + Math.random() * 10, color: k % 3 ? '#ffd23f' : '#ffffff' });
@@ -2120,7 +2238,7 @@ function openMail() {
   const el = document.getElementById('mail');
   if (!el || !el.classList) return;                 // (no overlay in headless tests)
   state = 'mail';
-  touches.clear(); input.left = input.right = input.jumpHeld = false;
+  touches.clear(); for (const i of [input, input2]) i.left = i.right = i.jumpHeld = false;
   const env = el.querySelector('.env'), close = el.querySelector('.close');
   el.querySelector('.msg').textContent = MAIL.message;
   env.className = 'env drop'; close.classList.remove('on');
@@ -2143,8 +2261,8 @@ function closeMail() {
   el.hidden = true;
   el.querySelectorAll('.cf').forEach(c => c.remove());
   el.querySelector('.env').className = 'env';
-  touches.clear(); input.left = input.right = input.jumpHeld = false;
-  player.invuln = Math.max(player.invuln, 90);      // a moment to get your bearings
+  touches.clear(); for (const i of [input, input2]) i.left = i.right = i.jumpHeld = false;
+  for (const p of alivePlayers()) p.invuln = Math.max(p.invuln, 90);   // a moment to get your bearings
   state = 'play';
 }
 (() => {                                             // wire the overlay buttons once
@@ -2210,8 +2328,10 @@ function drawIcicles() {
     if (ic.state === 'grow' && (frameCount >> 4) % 3 === 0) ell(x, y + L + 0.8, 0.35, 0.45, 'rgba(200,240,255,0.9)');   // drip
   }
 }
-function drawPlayer() {
-  const p = player;
+function drawPlayers() {                           // P2 first, so Player 1 is on top where they overlap
+  for (let i = players.length - 1; i >= 0; i--) if (players[i].inGame && !players[i].out) drawPlayer(players[i]);
+}
+function drawPlayer(p) {
   if (!p.dead && p.invuln > 0 && frameCount % 6 < 3) return;
   if (p.dead && p.deathCause === 'spark') {
     const blink = p.deathT > 40 && p.deathT < 47;
@@ -2231,23 +2351,36 @@ function drawPlayer() {
     wrapDraw(p.x, 7, x => {
       ctx.save(); ctx.translate(x, p.y);
       if (p.dead && p.deathT > 45) { ctx.translate(0, -8); ctx.scale(1, -1); ctx.translate(0, 8); }
-      workerHD(p.face, swing, air, armUp);
+      workerHD(p.face, swing, air, armUp, WORKER_PALS[p.id]);
       ctx.restore();
     });
+    drawDazed(p);
     return;
   }
+  const SP = p.id ? SPR2 : SPR;
   let s, img;
   if (p.dead) {
-    s = SPR.stand;
+    s = SP.stand;
     img = p.deathT > 45 ? (p.face > 0 ? s.fr : s.fl) : (p.face > 0 ? s.r : s.l);
   } else {
-    if (!p.onGround) s = SPR.jump;
-    else if (p.skid) s = SPR.walkA;
-    else if (Math.abs(p.vx) < 0.05) s = SPR.stand;
-    else s = (Math.floor(p.anim) & 1) ? SPR.walkB : SPR.walkA;
+    if (!p.onGround) s = SP.jump;
+    else if (p.skid) s = SP.walkA;
+    else if (Math.abs(p.vx) < 0.05) s = SP.stand;
+    else s = (Math.floor(p.anim) & 1) ? SP.walkB : SP.walkA;
     img = p.face > 0 ? s.r : s.l;
   }
   blitWrap(img, Math.round(p.x - s.w / 2), Math.round(p.y - s.h), s.w);
+  drawDazed(p);
+}
+// 2P: little stars circling the head of a worker the other one bumped
+function drawDazed(p) {
+  if (p.dead || p.stun <= 0) return;
+  for (let k = 0; k < 3; k++) {
+    const a = frameCount * 0.18 + k * (Math.PI * 2 / 3);
+    const x = p.x + Math.cos(a) * 6, y = p.y - p.h - 4 + Math.sin(a) * 1.6;
+    if (HD) ell(x, y, 1.1, 1.1, k === 1 ? '#ffffff' : '#ffd23f');
+    else { ctx.fillStyle = k === 1 ? '#ffffff' : '#ffd23f'; ctx.fillRect(Math.round(x) - 1, Math.round(y) - 1, 2, 2); }
+  }
 }
 // =====================================================================
 // CARTOON CRITTERS (HD mode) — Bernie's picks: Chunky Buddy turtle, Bug-Eye crab, Buzzy fly.
@@ -2478,13 +2611,19 @@ function drawPopups() {
 const pad6 = n => String(n).padStart(6, '0');
 function drawHUD() {
   ctx.font = FONT; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  const [p1, p2] = players, two = state === 'title' ? twoP : p2.inGame;
   ctx.fillStyle = C.hudP1; ctx.fillText('I', 10, 3);
-  ctx.fillStyle = C.hud;   ctx.fillText(pad6(score), 20, 3);
+  ctx.fillStyle = C.hud;   ctx.fillText(pad6(p1.score), 20, 3);
+  if (two) {                                       // 2P: Player 2's score top right; phase moves under TOP
+    ctx.fillStyle = C.hudP2; ctx.fillText('II', 196, 3);
+    ctx.fillStyle = C.hud;   ctx.fillText(pad6(p2.score), 210, 3);
+  }
   ctx.textAlign = 'center';
-  ctx.fillStyle = C.hudTop; ctx.fillText('TOP ' + pad6(Math.max(topScore, score)), W / 2, 3);
+  ctx.fillStyle = C.hudTop; ctx.fillText('TOP ' + pad6(Math.max(topScore, hiScore())), W / 2, 3);
   if (state !== 'title') {
-    ctx.textAlign = 'right'; ctx.fillStyle = C.girderHi;
-    ctx.fillText('P' + phase, W - 10, 3);
+    ctx.fillStyle = C.girderHi;
+    if (!two) { ctx.textAlign = 'right'; ctx.fillText('P' + phase, W - 10, 3); }
+    else if (!(bonus && bonus.t > 0)) ctx.fillText('PHASE ' + phase, W / 2, 13);
   }
   if (bonus && bonus.t > 0) {
     const secs = Math.ceil(Math.max(0, bonus.t - 60) / 60);
@@ -2493,11 +2632,17 @@ function drawHUD() {
     ctx.fillText(`TIME ${String(secs).padStart(2, '0')}   COINS ${bonus.got}/${bonus.total}`, W / 2, 13);
   }
   ctx.textAlign = 'left';
-  for (let i = 0; i < Math.min(lives - 1, 6); i++) {
-    const x = 20 + i * 8;
-    ctx.fillStyle = WPAL.O; ctx.fillRect(x + 1, 12, 4, 2);
-    ctx.fillStyle = WPAL.o; ctx.fillRect(x, 14, 7, 1);
-  }
+  const hats = (p, x0, max, pal) => {              // spare lives as little hard hats
+    if (state !== 'title' && p.out) { ctx.font = 'bold 6px ui-monospace, Menlo, Consolas, monospace';
+      ctx.fillStyle = '#888'; ctx.fillText('OUT', x0, 11); ctx.font = FONT; return; }
+    for (let i = 0; i < Math.min(p.lives - 1, max); i++) {
+      const x = x0 + i * 8;
+      ctx.fillStyle = pal.O; ctx.fillRect(x + 1, 12, 4, 2);
+      ctx.fillStyle = pal.o; ctx.fillRect(x, 14, 7, 1);
+    }
+  };
+  hats(p1, 20, 6, WPAL);
+  if (two) hats(p2, 210, 5, WPAL2);
   ctx.textAlign = 'right'; ctx.fillStyle = '#444';
   ctx.fillText('v' + VERSION, W - 4, H - 10);
   ctx.textAlign = 'left';
@@ -2521,12 +2666,17 @@ function drawTitle() {
   ctx.fillText('Bump the girder. Kick the critter.', W / 2, 74);
   if (HD) {
     const bob = Math.sin(frameCount * 0.08);
-    ctx.save(); ctx.translate(W / 2 - 50, 142); ctx.scale(2.2, 2.2); TOON.turtle(ctx, TOON_TURTLE[0], false, frameCount * 0.12); ctx.restore();
-    ctx.save(); ctx.translate(W / 2, 142); ctx.scale(2.8, 2.8); workerHD(1, 0, false, false); ctx.restore();
-    ctx.save(); ctx.translate(W / 2 + 50, 142); ctx.scale(2.0, 2.0); ctx.scale(-1, 1); TOON.crab(ctx, TOON_CRAB[0], false, false, frameCount * 0.12); ctx.restore();
+    ctx.save(); ctx.translate(W / 2 - (twoP ? 64 : 50), 142); ctx.scale(2.2, 2.2); TOON.turtle(ctx, TOON_TURTLE[0], false, frameCount * 0.12); ctx.restore();
+    if (!twoP) { ctx.save(); ctx.translate(W / 2, 142); ctx.scale(2.8, 2.8); workerHD(1, 0, false, false); ctx.restore(); }
+    else for (const k of [0, 1]) {                 // 2P: the two workers face each other
+      ctx.save(); ctx.translate(W / 2 + (k ? 21 : -21), 142); ctx.scale(2.5, 2.5);
+      workerHD(k ? -1 : 1, 0, false, false, WORKER_PALS[k]); ctx.restore();
+    }
+    ctx.save(); ctx.translate(W / 2 + (twoP ? 66 : 50), 142); ctx.scale(2.0, 2.0); ctx.scale(-1, 1); TOON.crab(ctx, TOON_CRAB[0], false, false, frameCount * 0.12); ctx.restore();
   } else {
     ctx.drawImage(ESPR.snap[0].a.r, W / 2 - 62, 122, 32, 18);
-    ctx.drawImage(SPR.stand.r, W / 2 - 18, 92, 36, 48);
+    if (!twoP) ctx.drawImage(SPR.stand.r, W / 2 - 18, 92, 36, 48);
+    else { ctx.drawImage(SPR.stand.r, W / 2 - 30, 103, 28, 37); ctx.drawImage(SPR2.stand.l, W / 2 + 2, 103, 28, 37); }
     ctx.drawImage(ESPR.pinc[0].a.l, W / 2 + 30, 120, 32, 20);
   }
   if (Math.floor(frameCount / 30) % 2 === 0) {
@@ -2534,7 +2684,12 @@ function drawTitle() {
     ctx.fillText(padActive() ? 'PRESS \u2715 TO START' : isTouch ? 'TAP TO START' : 'PRESS SPACE TO START', W / 2, 160);
   }
   ctx.fillStyle = '#888';
-  ctx.fillText(padActive() ? 'Stick: move   \u2715: jump   L1/R1: phase   \u25B3: art' : isTouch ? 'Left thumb: move   Right thumb: jump' : 'Arrows / A D to move, Space / Z to jump  (H: art)', W / 2, 177);
+  const help = twoP
+    ? (PAD.slot[0] !== null ? 'One game controller per player' : isTouch ? 'P1: touch controls   P2: game controller'
+       : 'P1: arrows + Space   P2: A D + W  (or controllers)')
+    : padActive() ? 'Stick move  \u2715 jump  \u25A1 players  L1/R1 phase  \u25B3 art' : isTouch ? 'Left thumb: move   Right thumb: jump'
+    : 'Arrows / A D to move, Space / Z to jump  (H: art)';
+  ctx.fillText(help, W / 2, 177);
   // ART toggle button
   const b = HD_CHIP;
   roundRect(b.x, b.y, b.w, b.h, 3);
@@ -2542,7 +2697,14 @@ function drawTitle() {
   ctx.lineWidth = 0.8; ctx.strokeStyle = HD ? '#ffd08a' : 'rgba(134,168,255,0.9)'; ctx.stroke();
   ctx.font = 'bold 7px ui-monospace, Menlo, Consolas, monospace';
   ctx.fillStyle = HD ? '#1a0d00' : '#e0e8ff';
-  ctx.fillText(HD ? 'ART: HD  \u21C4' : 'ART: PIXEL  \u21C4', b.x + b.w / 2, b.y + b.h / 2 + 0.4);
+  ctx.fillText(HD ? 'ART: HD \u21C4' : 'ART: PIXEL \u21C4', b.x + b.w / 2, b.y + b.h / 2 + 0.4);
+  // 1 / 2 PLAYERS toggle
+  const pc = PLAYERS_CHIP;
+  roundRect(pc.x, pc.y, pc.w, pc.h, 3);
+  ctx.fillStyle = twoP ? 'rgba(191,228,255,0.85)' : 'rgba(191,228,255,0.18)'; ctx.fill();
+  ctx.lineWidth = 0.8; ctx.strokeStyle = 'rgba(191,228,255,0.95)'; ctx.stroke();
+  ctx.fillStyle = twoP ? '#0a1a2a' : '#e0f0ff';
+  ctx.fillText(twoP ? '2 PLAYERS \u21C4' : '1 PLAYER \u21C4', pc.x + pc.w / 2, pc.y + pc.h / 2 + 0.4);
   // DEV start-phase picker
   const q = PHASE_CHIP;
   roundRect(q.x, q.y, q.w, q.h, 3);
@@ -2561,13 +2723,14 @@ function drawGameOver() {
   ctx.font = 'bold 14px ui-monospace, Menlo, Consolas, monospace';
   ctx.fillStyle = C.hudTop; ctx.fillText('GAME OVER', W / 2, 112);
   ctx.font = FONT; ctx.fillStyle = C.hud;
-  ctx.fillText('Score ' + score + '   Phase ' + phase, W / 2, 128);
+  const [p1, p2] = players;
+  ctx.fillText(p2.inGame ? `I ${p1.score}   II ${p2.score}   Phase ${phase}` : 'Score ' + p1.score + '   Phase ' + phase, W / 2, 128);
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
 }
 function drawDebug() {
-  const p = player;
+  const p = players[0];
   ctx.strokeStyle = '#0f0'; ctx.lineWidth = 0.5;
-  ctx.strokeRect(p.x - p.w / 2, p.y - p.h, p.w, p.h);
+  for (const q of inPlay()) ctx.strokeRect(q.x - q.w / 2, q.y - q.h, q.w, q.h);
   ctx.strokeStyle = '#f0f';
   for (const e of enemies) ctx.strokeRect(e.x - e.w / 2, e.y - e.h, e.w, e.h);
   ctx.font = FONT; ctx.fillStyle = '#0f0'; ctx.textAlign = 'left';
@@ -2642,7 +2805,7 @@ function render() {
   drawFloor();
   if (state !== 'title') { drawCoins(); drawEnemies(); }
   drawPipes();                       // critters + coins emerge from inside the pipes...
-  if (state !== 'title') { drawPlayer(); drawSparks(); drawIcicles(); drawMailBird(); }   // ...while the worker (and sparks, icicles) are in front
+  if (state !== 'title') { drawPlayers(); drawSparks(); drawIcicles(); drawMailBird(); }   // ...while the worker (and sparks, icicles) are in front
   drawParticles();
   drawPopups();
   ctx.restore();
@@ -2653,7 +2816,7 @@ function render() {
   if (DEBUG) drawDebug();
   ctx.restore();
 
-  if (isTouch && !padActive()) { ctx.setTransform(d, 0, 0, d, 0, 0); drawControls(); }
+  if (showTouch()) { ctx.setTransform(d, 0, 0, d, 0, 0); drawControls(); }
 }
 
 // ---------- Main loop ----------
