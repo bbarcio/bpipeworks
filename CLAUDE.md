@@ -129,7 +129,7 @@ Live: https://bbarcio.github.io/bpipeworks/
   Real reward delivery is now designed as signed + passphrase-encrypted gift links (next section). Note: any secret
   shipped in client code/repo is readable by players, and unsigned URL overrides enable phishing. Don't reintroduce either.
 
-## Gift links (v0.13.0, built; waiting on Bernie's public key)
+## Gift links (v0.13.0, LIVE: key in, merged to main 2026-11-15)
 Bernie gives each recipient a printed QR code. The QR opens the game with an encrypted, signed gift in the URL
 fragment; the recipient catches the Courier Pigeon, types a passphrase Bernie tells them separately, and the letter
 reveals a personal message + a "Claim" button for the gift card's own redemption link.
@@ -197,18 +197,17 @@ Keys + tooling:
   it only means making a new key pair and reprinting unclaimed QRs.
 
 Steps (status):
-1. TODO Bernie: `node tools/gift-sign.mjs keygen` on his computer; back up the private key.
-2. TODO Bernie: paste the PUBLIC key line into index.html (own commit). Until then gift links are ignored.
-3. GIFT_ALLOWED_HOSTS = www.amazon.com, amazon.com for now; change if the provider changes.
+1. DONE: key pair made (private key in ~/.pipeworks, backed up).
+2. DONE: public key in index.html (commit d17624e).
+3. DONE: provider = Amazon (claim codes). GIFT_ALLOWED_HOSTS = www.amazon.com, amazon.com.
 4. DONE v0.13.0: game side.
 5. DONE headless: valid + messy-case passphrase, wrong passphrase, tampered, wrong key, expired, evil host,
    fragment stripped, reload keeps gift, ?phase ignored, Later -> returns, 2P catch, no-gift 1P/2P traces
    identical to v0.12.0. TODO: scan a printed QR on a real iPhone and type the passphrase with the iOS keyboard.
 6. DONE: VERSION + sw.js CACHE 0.13.0.
-7. TODO Bernie: merge to `main` (Pages deploys from main) once the key is in, then make a test gift
+7. DONE: merged to `main`. TODO Bernie: make a test gift
    (`node tools/gift-sign.mjs make --name Test --message "Hi" --code TEST-CODE --qr test.svg`), scan it on the
    iPhone, and run `verify "<url>" --passphrase "..."` if anything looks off.
-Open question: card provider (probably Amazon) -> fills `GIFT_ALLOWED_HOSTS` and decides code vs link display.
 
 ## Roadmap
 - Invisible-girder bonus rounds (arcade: some later bonus rounds)
