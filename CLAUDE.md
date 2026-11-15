@@ -205,6 +205,9 @@ Steps (status):
    fragment stripped, reload keeps gift, ?phase ignored, Later -> returns, 2P catch, no-gift 1P/2P traces
    identical to v0.12.0. TODO: scan a printed QR on a real iPhone and type the passphrase with the iOS keyboard.
 6. DONE: VERSION + sw.js CACHE 0.13.0.
+7. TODO Bernie: merge to `main` (Pages deploys from main) once the key is in, then make a test gift
+   (`node tools/gift-sign.mjs make --name Test --message "Hi" --code TEST-CODE --qr test.svg`), scan it on the
+   iPhone, and run `verify "<url>" --passphrase "..."` if anything looks off.
 Open question: card provider (probably Amazon) -> fills `GIFT_ALLOWED_HOSTS` and decides code vs link display.
 
 ## Roadmap
