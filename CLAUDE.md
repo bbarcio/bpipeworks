@@ -149,11 +149,22 @@ URL + payload:
 - Blob v1 (binary, kept small so the QR stays scannable when printed ~3 cm):
   `ver(1)=1 | exp(4, unix days or seconds, plaintext so expired gifts are rejected before the prompt) |
    salt(16) | iv(12) | ciphertext+GCM tag | signature(64, raw r||s)`. Signature covers every byte before it.
-- Plaintext (JSON, compact keys): `{ m: message, u: claim URL, n: optional recipient name }`.
+- Plaintext (JSON, compact keys): `{ m: message, u: claim URL (optional), c: claim code (optional),
+  n: optional recipient name }`. At least one of u/c. Card provider not chosen yet (probably Amazon). Amazon
+  e-gift cards are a CLAIM CODE, not a link: show the code with a Copy button, plus a Redeem button to Amazon's
+  redeem page. The code itself is single-use at Amazon.
 - Target total URL under ~400 chars (QR version ~15 at ECC level M). Short messages; long claim URLs grow the code.
 
 Game-side rules:
 - Verify signature + expiry FIRST; only a genuine, unexpired gift turns on the pigeon / passphrase prompt.
+- GIFT-ONLY PIGEON (Bernie, decided): the Courier Pigeon flies ONLY for players who opened a valid gift URL.
+  No gift = no pigeon at all (`?mailtest` stays as a dev tool).
+- GIFT DIFFICULTY picker (Bernie, decided): a title-screen chip shown ONLY in gift mode; the RECIPIENT picks:
+  EASY = phase 2, MEDIUM = phase 6, HARD = phase 9. Default EASY. The game still starts at phase 1; the pigeon
+  first appears once they REACH the chosen phase, and keeps coming on every later regular phase until caught
+  (never in bonus rounds). Gift mode ignores the dev start-phase picker and `?phase=` (always starts at phase 1).
+  Choice kept in sessionStorage with the gift. Works in 2P: whoever catches the pigeon opens the letter.
+- Passphrase is asked AFTER the pigeon is caught (inside the #mail envelope), not on launch.
 - Passphrase: normalize before deriving (trim, lowercase, collapse spaces, Unicode NFC) so "Biscuit " == "biscuit".
   Wrong passphrase = AES-GCM fails -> friendly "not quite" retry, no hints. PBKDF2 iterations ~300k
   (well under a second on a phone; makes offline guessing slow). Bernie should pick passphrases that aren't
@@ -175,11 +186,12 @@ Steps to finish (in order):
 1. Bernie runs `keygen` locally and keeps the private key outside the repo.
 2. Add the PUBLIC key JWK to index.html as `GIFT_PUBLIC_KEY` (Bernie will do this in its own commit).
 3. Set `GIFT_ALLOWED_HOSTS` to the card provider's redemption domain(s).
-4. Build the game side: parse `#g=`, verify, expiry check, passphrase prompt in the #mail overlay, Claim button.
+4. Build the game side: parse `#g=`, verify, expiry check, gift-only pigeon, EASY/MEDIUM/HARD title chip,
+   passphrase prompt in the #mail overlay, Claim/Copy-code buttons.
 5. Tests (headless): valid gift + right passphrase works; wrong passphrase; tampered byte; wrong key; expired;
    off-allowlist host; no gift -> 1P trace hash unchanged. Scan a printed test QR on a real iPhone.
 6. Release checklist (VERSION + sw.js CACHE).
-Open question: does the pigeon fly for everyone (prize only for gift holders) or only when a valid gift is present?
+Open question: card provider (probably Amazon) -> fills `GIFT_ALLOWED_HOSTS` and decides code vs link display.
 
 ## Roadmap
 - Invisible-girder bonus rounds (arcade: some later bonus rounds)
