@@ -113,7 +113,7 @@
    v0.3: phase schedule, Pincer crabs, coin drops, bonus coin round,
          Jolt block (3-use shockwave), 1-up at 20,000
    ===================================================================== */
-const VERSION = '0.13.2';
+const VERSION = '0.13.3';
 // Arcade CRTs showed 256x224 on a 4:3 tube, so pixels were ~7:6 wide. ?square for square pixels.
 const PIXEL_ASPECT = /[?&]square/.test(location.search) ? 1 : 7 / 6;
 const W = 256, H = 224;
@@ -3005,8 +3005,20 @@ resize();
 requestAnimationFrame(frame);
 
 // Offline support (needs https or localhost; silently skipped elsewhere)
+// Updates: home-screen apps on iOS usually RESUME instead of relaunching, so also check for a new build
+// whenever the app comes back to the foreground (or the connection returns). Only when online; offline the
+// cached copy just keeps running. A new build reloads the page, but only on the title screen (never mid-game;
+// if you're playing it waits until you're back at the title).
+let swReload = false;
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  const hadController = !!navigator.serviceWorker.controller;      // first visit: no reload when the SW takes over
+  let swReg = null;
+  const checkUpdate = () => { if (swReg && navigator.onLine !== false) swReg.update().catch(() => {}); };
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').then(r => { swReg = r; }).catch(() => {}));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
+  window.addEventListener('online', checkUpdate);
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) swReload = true; });
+  setInterval(() => { if (swReload && state === 'title' && document.visibilityState === 'visible') { swReload = false; location.reload(); } }, 500);
 }
 </script>
 </body>

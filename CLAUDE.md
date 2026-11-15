@@ -10,6 +10,9 @@ Live: https://bbarcio.github.io/bpipeworks/
 - Single `index.html`: vanilla JS + HTML5 Canvas + Web Audio. No frameworks, no external requests.
 - PWA: `manifest.json`, `sw.js` (page loads network-first w/ 3s timeout since v0.13.1 so updates/gift QRs
   run current code; other files stale-while-revalidate), icons. Offline after first visit.
+  v0.13.3: iOS home-screen apps resume instead of relaunching, so the page calls `reg.update()` on
+  visibilitychange/online (only if `navigator.onLine`); a new SW sets `swReload` and the page reloads ONLY on the
+  title screen (waits if mid-game). Version label `drawVersion()` is drawn above the title overlay.
 - Target: iPhone/iPad landscape. iPadOS touch detection via `navigator.maxTouchPoints > 1`.
 
 ## Architecture (index.html)
