@@ -143,7 +143,7 @@ const MAIL_TEST = /[?&]mailtest/.test(location.search);
 // ===================== GIFT LINKS (see CLAUDE.md "Gift links") =====================
 // Make keys + links with tools/gift-sign.mjs on your own computer. Paste the PUBLIC key it prints here
 // (it is safe to publish). null = gift links are ignored.
-const GIFT_PUBLIC_KEY = null;
+const GIFT_PUBLIC_KEY = {"kty":"EC","crv":"P-256","x":"-9dyeaQNyNvaBiJb60h_pT1_oe7btK7Q2h7OpGcmt30","y":"Lj33YmulB50pCWKyMyVev-zqUhGRyaXGxE6zY3KSkV0"};
 // The Redeem button only opens https links on these hosts. Card provider not final yet (probably Amazon).
 const GIFT_ALLOWED_HOSTS = ['www.amazon.com', 'amazon.com'];
 // The recipient picks how far they must get before the pigeon brings the letter
