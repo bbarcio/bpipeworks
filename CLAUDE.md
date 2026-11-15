@@ -8,7 +8,8 @@ Live: https://bbarcio.github.io/bpipeworks/
 
 ## Stack
 - Single `index.html`: vanilla JS + HTML5 Canvas + Web Audio. No frameworks, no external requests.
-- PWA: `manifest.json`, `sw.js` (stale-while-revalidate cache), icons. Offline after first visit.
+- PWA: `manifest.json`, `sw.js` (page loads network-first w/ 3s timeout since v0.13.1 so updates/gift QRs
+  run current code; other files stale-while-revalidate), icons. Offline after first visit.
 - Target: iPhone/iPad landscape. iPadOS touch detection via `navigator.maxTouchPoints > 1`.
 
 ## Architecture (index.html)
@@ -203,9 +204,9 @@ Steps (status):
 4. DONE v0.13.0: game side.
 5. DONE headless: valid + messy-case passphrase, wrong passphrase, tampered, wrong key, expired, evil host,
    fragment stripped, reload keeps gift, ?phase ignored, Later -> returns, 2P catch, no-gift 1P/2P traces
-   identical to v0.12.0. TODO: scan a printed QR on a real iPhone and type the passphrase with the iOS keyboard.
+   identical to v0.12.0. DONE 2026-11-15: Bernie scanned a test QR on his iPhone and unlocked it (after v0.13.1 sw fix).
 6. DONE: VERSION + sw.js CACHE 0.13.0.
-7. DONE: merged to `main`. TODO Bernie: make a test gift
+7. DONE: merged to `main`; test gift made and verified on iPhone. Recipe for a test gift
    (`node tools/gift-sign.mjs make --name Test --message "Hi" --code TEST-CODE --qr test.svg`), scan it on the
    iPhone, and run `verify "<url>" --passphrase "..."` if anything looks off.
 
