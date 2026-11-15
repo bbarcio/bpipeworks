@@ -59,6 +59,25 @@
   #mail .cf { position: absolute; top: -4vh; width: 8px; height: 13px; border-radius: 2px; z-index: 7; pointer-events: none;
     animation: cfFall linear forwards; }
   @keyframes cfFall { to { transform: translateY(115vh) rotate(720deg); } }
+  /* Gift letters: the letter comes all the way out in front of the envelope so the lock / prize fit */
+  #mail .msg { white-space: pre-line; }
+  #mail .gift .letter { height: auto; min-height: calc(var(--w) * 0.51); }
+  #mail .gift.reveal .letter { z-index: 6; transition: transform 0.8s cubic-bezier(.25, 1.5, .45, 1), z-index 0s linear 0.8s; }
+  #mail .gift-lock, #mail .gift-prize { display: flex; flex-direction: column; align-items: center; gap: calc(var(--w) * 0.03);
+    margin-bottom: calc(var(--w) * 0.02); }
+  #mail [hidden] { display: none !important; }
+  #mail .pass { width: 86%; box-sizing: border-box; font: 600 16px ui-rounded, system-ui, sans-serif; text-align: center;
+    padding: 7px 8px; border: 2px solid #c9b48a; border-radius: 8px; background: #fff; color: #2a2238; outline: none; }
+  #mail .pass:focus { border-color: #8a4ac8; }
+  #mail .gbtn { border: 0; border-radius: 999px; padding: 7px 13px; white-space: nowrap; font: 800 13px ui-rounded, system-ui, sans-serif;
+    background: #8a4ac8; color: #fff; box-shadow: 0 2px 0 #5d2e8c; text-decoration: none; display: inline-block; cursor: pointer; }
+  #mail .gbtn:disabled { opacity: .6; }
+  #mail .hint { min-height: 1.2em; font-size: 13px; font-weight: 700; color: #b01e2e; }
+  #mail .shake { animation: shake .35s; }
+  @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+  #mail .code { font: 800 15px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .06em; color: #2a2238; background: #f1e9d6;
+    border: 2px dashed #c9b48a; border-radius: 6px; padding: 5px 8px; user-select: all; -webkit-user-select: all; word-break: break-all; }
+  #mail .code-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
 </style>
 </head>
 <body>
@@ -70,6 +89,16 @@
     <div class="letter">
       <div class="kicker">SPECIAL DELIVERY</div>
       <div class="msg"></div>
+      <div class="gift-lock" hidden>
+        <input class="pass" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+               enterkeyhint="go" placeholder="secret passphrase" aria-label="Secret passphrase">
+        <button class="gbtn unlock" type="button">Open the letter</button>
+        <div class="hint"></div>
+      </div>
+      <div class="gift-prize" hidden>
+        <div class="code-row"><span class="code"></span><button class="gbtn copy" type="button">Copy</button></div>
+        <a class="gbtn claim" target="_blank" rel="noopener noreferrer"></a>
+      </div>
     </div>
     <div class="front"></div>
     <div class="flap"></div>
@@ -84,7 +113,7 @@
    v0.3: phase schedule, Pincer crabs, coin drops, bonus coin round,
          Jolt block (3-use shockwave), 1-up at 20,000
    ===================================================================== */
-const VERSION = '0.12.0';
+const VERSION = '0.13.0';
 // Arcade CRTs showed 256x224 on a 4:3 tube, so pixels were ~7:6 wide. ?square for square pixels.
 const PIXEL_ASPECT = /[?&]square/.test(location.search) ? 1 : 7 / 6;
 const W = 256, H = 224;
@@ -99,19 +128,77 @@ const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 1; // i
 
 // ---------- Tuning (also live in console as TUNE) ----------
 // ===================== COURIER MAIL — edit these to configure the envelope =====================
+// The pigeon only flies for players who opened a signed gift link (see GIFT below), or with ?mailtest.
 const MAIL = {
   enabled: true,
-  // The prize link was removed in v0.10.2; the real reward delivery will be designed separately.
-  message: "You caught the mail! Nice catch.",
+  message: "You caught the mail! Nice catch.",  // shown for ?mailtest without a gift
   points: 1000,                                // bonus for catching the pigeon
-  fromPhase: 1,                                // first phase it can appear in
-  chance: 0.5,                                 // odds it shows up in a given (non-bonus) phase
-  earliest: 10, latest: 30,                    // seconds into the phase it can arrive
+  earliest: 6, latest: 15,                     // seconds into the phase it can arrive
   oncePerGame: false,                          // true = only one delivery per game
   speed: 0.7, passes: 2,                       // flight speed (px/frame) and screen crossings before it leaves
 };
 // ?mailtest = the pigeon comes every phase, 4 seconds in (for trying it out)
 const MAIL_TEST = /[?&]mailtest/.test(location.search);
+
+// ===================== GIFT LINKS (see CLAUDE.md "Gift links") =====================
+// Make keys + links with tools/gift-sign.mjs on your own computer. Paste the PUBLIC key it prints here
+// (it is safe to publish). null = gift links are ignored.
+const GIFT_PUBLIC_KEY = null;
+// The Redeem button only opens https links on these hosts. Card provider not final yet (probably Amazon).
+const GIFT_ALLOWED_HOSTS = ['www.amazon.com', 'amazon.com'];
+// The recipient picks how far they must get before the pigeon brings the letter
+const GIFT_LEVELS = [{ name: 'EASY', phase: 2 }, { name: 'MEDIUM', phase: 6 }, { name: 'HARD', phase: 9 }];
+const GIFT_KDF_ITER = 300000;                  // must match tools/gift-sign.mjs
+let gift = null;                               // { body } once a genuine, unexpired gift link is verified
+let giftPrize = null;                          // decrypted { m, n, c, u } once the passphrase was right
+let giftLevel = 0;
+const giftNormalize = s => s.normalize('NFC').trim().toLowerCase().replace(/\s+/g, ' ');   // same as the tool
+function b64urlDecode(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(b, ch => ch.charCodeAt(0));
+}
+// Blob: ver(1)=1 | exp(4) | salt(16) | iv(12) | AES-GCM ciphertext+tag | ECDSA P-256 signature(64) over all before it
+async function loadGift() {
+  let raw = null;
+  const m = location.hash.match(/[#&]g=([A-Za-z0-9_-]+)/);
+  if (m) {
+    raw = m[1];
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}   // out of the address bar
+    try { sessionStorage.setItem('pipeworks.gift', raw); } catch (e) {}                         // survives a reload
+  } else try { raw = sessionStorage.getItem('pipeworks.gift'); } catch (e) {}
+  if (!raw || !GIFT_PUBLIC_KEY || !(window.crypto && crypto.subtle)) return;
+  try {
+    const b = b64urlDecode(raw);
+    if (b.length < 1 + 4 + 16 + 12 + 16 + 64 || b[0] !== 1) throw 0;
+    const body = b.subarray(0, b.length - 64), sig = b.subarray(b.length - 64);
+    const key = await crypto.subtle.importKey('jwk', GIFT_PUBLIC_KEY, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    if (!await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sig, body)) throw 0;
+    if (Date.now() / 1000 > new DataView(b.buffer, 1, 4).getUint32(0)) throw 0;           // expired
+    try { giftLevel = Math.max(0, Math.min(2, parseInt(sessionStorage.getItem('pipeworks.giftLevel') || '0', 10) || 0)); } catch (e) {}
+    gift = { body };
+  } catch (e) {                                  // forged, damaged or expired: silently ignored
+    try { sessionStorage.removeItem('pipeworks.gift'); } catch (e2) {}
+  }
+}
+async function openGift(pass) {                  // throws if the passphrase is wrong
+  const b = gift.body;
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(giftNormalize(pass)), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b.subarray(5, 21), iterations: GIFT_KDF_ITER, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.subarray(21, 33), additionalData: b.subarray(0, 5) }, key, b.subarray(33));
+  const p = JSON.parse(new TextDecoder().decode(pt));
+  return { m: String(p.m || ''), n: p.n ? String(p.n) : '', c: p.c ? String(p.c) : '', u: p.u ? String(p.u) : '' };
+}
+function giftClaimUrl(u) {                       // only https links on the allowlist get a button
+  try { const url = new URL(u); return url.protocol === 'https:' && GIFT_ALLOWED_HOSTS.includes(url.hostname) ? url : null; }
+  catch (e) { return null; }
+}
+function cycleGiftLevel(d) {
+  giftLevel = (giftLevel + d + GIFT_LEVELS.length) % GIFT_LEVELS.length;
+  try { sessionStorage.setItem('pipeworks.giftLevel', String(giftLevel)); } catch (e) {}
+  sfx.step(giftLevel & 1);
+}
+loadGift();
 
 const TUNE = {
   runMax: 1.35, runAccel: 0.10, skidDecel: 0.20, friction: 0.15, airAccel: 0.02,   // v0.4.2: less slippery (was skid 0.14, friction 0.10)
@@ -245,6 +332,7 @@ function onTouch(e) {
       const zone = zoneFor(t.clientX);
       if (zone === 'game' && inHDChip(t.clientX, t.clientY)) { toggleHD(); continue; }
       if (zone === 'game' && inChip(PLAYERS_CHIP, t.clientX, t.clientY)) { togglePlayers(); continue; }
+      if (zone === 'game' && gift && inChip(GIFT_CHIP, t.clientX, t.clientY)) { cycleGiftLevel(1); continue; }
       { const ph = zone === 'game' ? phaseChipHit(t.clientX, t.clientY) : null;
         if (ph !== null) { if (ph) setStartPhase(startPhase + ph); continue; } }
       const nt = { x: t.clientX, y: t.clientY, zone, ax: buttons.stick.cx };
@@ -265,13 +353,15 @@ for (const ev of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
 }
 cvs.addEventListener('mousedown', e => { unlockAudio();
   const ph = phaseChipHit(e.clientX, e.clientY);
-  if (inHDChip(e.clientX, e.clientY)) toggleHD(); else if (inChip(PLAYERS_CHIP, e.clientX, e.clientY)) togglePlayers(); else if (ph !== null) { if (ph) setStartPhase(startPhase + ph); } else startTap = true; });
+  if (inHDChip(e.clientX, e.clientY)) toggleHD(); else if (inChip(PLAYERS_CHIP, e.clientX, e.clientY)) togglePlayers();
+  else if (gift && inChip(GIFT_CHIP, e.clientX, e.clientY)) cycleGiftLevel(1); else if (ph !== null) { if (ph) setStartPhase(startPhase + ph); } else startTap = true; });
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 const JUMP_KEYS = ['Space', 'KeyZ', 'ArrowUp', 'KeyW', 'KeyX'];
 // 2-player keyboard split: P1 = arrows + Space/Up/'/', P2 = A D + W/Z/X
 const P1_JUMP_KEYS = ['Space', 'ArrowUp', 'Slash'], P2_JUMP_KEYS = ['KeyW', 'KeyZ', 'KeyX'];
 window.addEventListener('keydown', e => {
+  if (e.target && e.target.tagName === 'INPUT') return;   // typing a gift passphrase
   unlockAudio();
   if (!e.repeat) {
     if (!twoP) { if (JUMP_KEYS.includes(e.code)) input.jumpPressed = true; }
@@ -913,7 +1003,8 @@ function startGame() {
   }
   setJoltHits(3);
   sfx.start();
-  beginPhase(startPhase, true);
+  mailDelivered = false;
+  beginPhase(gift ? 1 : startPhase, true);          // gift mode always starts at phase 1
 }
 
 function beginPhase(n, gameStart = false) {
@@ -1867,14 +1958,16 @@ if (/[?&]hd/.test(location.search)) HD = true;
 const HD_CHIP = { x: W / 2 - 98, y: 191, w: 60, h: 13 };   // ART toggle button on the title screen
 const PLAYERS_CHIP = { x: W / 2 - 30, y: 191, w: 60, h: 13 }; // 1 / 2 PLAYERS toggle
 const PHASE_CHIP = { x: W / 2 + 38, y: 191, w: 60, h: 13 }; // DEV start-phase picker: left third = down, right third = up
+const GIFT_CHIP = { x: W / 2 + 38, y: 191, w: 72, h: 13 };   // gift mode: EASY / MEDIUM / HARD (replaces the phase picker)
 function setStartPhase(n) {
+  if (gift) { cycleGiftLevel(n > startPhase ? 1 : -1); return; }   // keys / L1 R1 pick the gift level instead
   startPhase = ((n - 1 + PHASE_PICK_MAX) % PHASE_PICK_MAX) + 1;    // wraps 30 -> 1 and 1 -> 30
   try { localStorage.setItem('pipeworks.startPhase', String(startPhase)); } catch (e) {}
   sfx.step(startPhase & 1);
 }
 // Returns -1 / +1 if a title-screen tap hit the picker arrows, 0 if it hit the middle, null if it missed
 function phaseChipHit(clientX, clientY) {
-  if (state !== 'title') return null;
+  if (state !== 'title' || gift) return null;
   const lx = (clientX - view.ox) / view.sx, ly = (clientY - view.oy) / view.sy, b = PHASE_CHIP;
   if (ly < b.y - 4 || ly > b.y + b.h + 5 || lx < b.x - 6 || lx > b.x + b.w + 6) return null;
   if (lx < b.x + b.w / 3) return -1;
@@ -2199,7 +2292,8 @@ function scheduleMail(n) {
   mailBird = null; mailClock = 0; mailAt = -1;
   if (!MAIL.enabled || isBonus(n) || (MAIL.oncePerGame && mailDelivered)) return;
   if (MAIL_TEST) { mailAt = 4 * 60; return; }
-  if (n < MAIL.fromPhase || Math.random() >= MAIL.chance) return;
+  // Gift-link holders only: from the phase they picked, every regular phase until the letter is opened
+  if (!gift || mailDelivered || n < GIFT_LEVELS[giftLevel].phase) return;
   mailAt = Math.round((MAIL.earliest + Math.random() * (MAIL.latest - MAIL.earliest)) * 60);
 }
 const MAIL_LANES = [56, 104, 152, 200].map(y => y - 32);   // above each level: out of reach standing, catchable with a jump
@@ -2227,7 +2321,8 @@ function updateMail() {
   if (p) catchMail(p);
 }
 function catchMail(p) {
-  const b = mailBird; mailBird = null; mailAt = -1; mailDelivered = true;
+  const b = mailBird; mailBird = null; mailAt = -1;
+  if (!gift || giftPrize) mailDelivered = true;     // a sealed gift letter keeps coming back until it's opened
   addScore(MAIL.points, b.x, b.y - 8, p);
   mailSfx.catch();
   for (let k = 0; k < 14; k++) particles.push({ x: b.x, y: b.y + 6, vx: Math.random() * 2.4 - 1.2, vy: -Math.random() * 2,
@@ -2241,22 +2336,66 @@ function openMail() {
   touches.clear(); for (const i of [input, input2]) i.left = i.right = i.jumpHeld = false;
   const env = el.querySelector('.env'), close = el.querySelector('.close');
   el.querySelector('.msg').textContent = MAIL.message;
-  env.className = 'env drop'; close.classList.remove('on');
+  el.querySelector('.gift-lock').hidden = el.querySelector('.gift-prize').hidden = true;
+  if (gift) { if (giftPrize) showGiftPrize(); else showGiftLock(); }
+  env.className = gift ? 'env gift drop' : 'env drop'; close.classList.remove('on');
   el.hidden = false;
   mailTimers.push(setTimeout(() => { env.classList.add('open'); mailSfx.rustle(); }, 700));
   mailTimers.push(setTimeout(() => {
     env.classList.add('reveal'); mailSfx.fanfare(); close.classList.add('on');
-    const cols = ['#ff9a1f', '#ffd23f', '#8a4ac8', '#1fae9e', '#ff6a8a', '#86a8ff'];
-    for (let i = 0; i < 46; i++) {
-      const c = document.createElement('span'); c.className = 'cf';
-      c.style.left = (Math.random() * 100) + 'vw'; c.style.background = cols[i % cols.length];
-      c.style.animationDuration = (1.8 + Math.random() * 1.6) + 's'; c.style.animationDelay = (Math.random() * 0.5) + 's';
-      el.appendChild(c);
-    }
+    if (!gift || giftPrize) confetti(el);
   }, 1200));
 }
-function closeMail() {
+function confetti(el) {
+  const cols = ['#ff9a1f', '#ffd23f', '#8a4ac8', '#1fae9e', '#ff6a8a', '#86a8ff'];
+  for (let i = 0; i < 46; i++) {
+    const c = document.createElement('span'); c.className = 'cf';
+    c.style.left = (Math.random() * 100) + 'vw'; c.style.background = cols[i % cols.length];
+    c.style.animationDuration = (1.8 + Math.random() * 1.6) + 's'; c.style.animationDelay = (Math.random() * 0.5) + 's';
+    el.appendChild(c);
+  }
+}
+function showGiftLock() {
   const el = document.getElementById('mail');
+  el.querySelector('.msg').textContent = 'A sealed letter for you!\nType the secret passphrase.';
+  const lock = el.querySelector('.gift-lock'), pass = lock.querySelector('.pass');
+  lock.hidden = false; pass.value = ''; pass.disabled = false;
+  lock.querySelector('.unlock').disabled = false; lock.querySelector('.hint').textContent = '';
+  el.querySelector('.close').textContent = 'Later \u25B6';
+}
+function showGiftPrize() {
+  const el = document.getElementById('mail'), g = giftPrize;
+  el.querySelector('.msg').textContent = (g.n ? 'Dear ' + g.n + ',\n' : '') + g.m;
+  el.querySelector('.gift-lock').hidden = true;
+  const prize = el.querySelector('.gift-prize'), row = prize.querySelector('.code-row'), claim = prize.querySelector('.claim');
+  prize.hidden = false;
+  row.hidden = !g.c; prize.querySelector('.code').textContent = g.c; prize.querySelector('.copy').textContent = 'Copy';
+  const url = g.u && giftClaimUrl(g.u);
+  claim.hidden = !url;
+  if (url) { claim.href = url.href; claim.textContent = 'Redeem at ' + url.hostname.replace(/^www\./, '') + ' \u25B6'; }
+  else claim.removeAttribute('href');
+  el.querySelector('.close').textContent = 'Back to work \u25B6';
+}
+let giftBusy = false;
+async function tryUnlock() {
+  const el = document.getElementById('mail'), lock = el.querySelector('.gift-lock');
+  const pass = lock.querySelector('.pass'), btn = lock.querySelector('.unlock'), hint = lock.querySelector('.hint');
+  if (giftBusy || !gift || giftPrize || !giftNormalize(pass.value)) return;
+  giftBusy = true; btn.disabled = pass.disabled = true; hint.textContent = ''; btn.textContent = 'Opening\u2026';
+  try {
+    giftPrize = await openGift(pass.value);
+    mailDelivered = true;                          // opened: the pigeon's job is done for this game
+    pass.blur(); showGiftPrize(); mailSfx.fanfare(); confetti(el);
+  } catch (e) {
+    btn.disabled = pass.disabled = false; hint.textContent = 'Not quite. Try again!';
+    lock.classList.remove('shake'); void lock.offsetWidth; lock.classList.add('shake');
+  }
+  btn.textContent = 'Open the letter'; giftBusy = false;
+}
+function closeMail() {
+  if (giftBusy) return;
+  const el = document.getElementById('mail');
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   mailTimers.forEach(clearTimeout); mailTimers = [];
   el.hidden = true;
   el.querySelectorAll('.cf').forEach(c => c.remove());
@@ -2269,7 +2408,23 @@ function closeMail() {
   const el = document.getElementById('mail');
   if (!el || !el.querySelector) return;
   el.querySelector('.close').addEventListener('click', e => { e.stopPropagation(); closeMail(); });
-  window.addEventListener('keydown', e => { if (state === 'mail' && (e.code === 'Escape' || e.code === 'Enter')) { e.preventDefault(); closeMail(); } });
+  el.querySelector('.unlock').addEventListener('click', e => { e.stopPropagation(); tryUnlock(); });
+  el.querySelector('.copy').addEventListener('click', e => {
+    e.stopPropagation();
+    const b = e.currentTarget, code = el.querySelector('.code');
+    const done = () => { b.textContent = 'Copied!'; };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code.textContent).then(done, () => {});
+    else { const r = document.createRange(); r.selectNodeContents(code); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+  });
+  window.addEventListener('keydown', e => {
+    if (state !== 'mail') return;
+    if (e.target && e.target.tagName === 'INPUT') {                // the passphrase box: Enter = open, Escape = later
+      if (e.code === 'Enter' || e.key === 'Enter') { e.preventDefault(); tryUnlock(); }
+      else if (e.code === 'Escape') { e.preventDefault(); closeMail(); }
+      return;
+    }
+    if (e.code === 'Escape' || e.code === 'Enter') { e.preventDefault(); closeMail(); }
+  });
 })();
 
 // Pigeon art (original): round lavender messenger pigeon, red mail cap, envelope held in its feet
@@ -2662,8 +2817,9 @@ function drawTitle() {
   ctx.font = 'bold 26px ui-monospace, Menlo, Consolas, monospace';
   ctx.fillStyle = PAL.o; ctx.fillText('PIPEWORKS', W / 2 + 2, 52);
   ctx.fillStyle = PAL.O; ctx.fillText('PIPEWORKS', W / 2, 50);
-  ctx.font = FONT; ctx.fillStyle = C.girderHi;
-  ctx.fillText('Bump the girder. Kick the critter.', W / 2, 74);
+  ctx.font = FONT; ctx.fillStyle = gift ? '#ff9ab0' : C.girderHi;
+  ctx.fillText(gift ? `A letter is coming! Catch the pigeon: phase ${GIFT_LEVELS[giftLevel].phase}+`
+                    : 'Bump the girder. Kick the critter.', W / 2, 74);
   if (HD) {
     const bob = Math.sin(frameCount * 0.08);
     ctx.save(); ctx.translate(W / 2 - (twoP ? 64 : 50), 142); ctx.scale(2.2, 2.2); TOON.turtle(ctx, TOON_TURTLE[0], false, frameCount * 0.12); ctx.restore();
@@ -2705,6 +2861,16 @@ function drawTitle() {
   ctx.lineWidth = 0.8; ctx.strokeStyle = 'rgba(191,228,255,0.95)'; ctx.stroke();
   ctx.fillStyle = twoP ? '#0a1a2a' : '#e0f0ff';
   ctx.fillText(twoP ? '2 PLAYERS \u21C4' : '1 PLAYER \u21C4', pc.x + pc.w / 2, pc.y + pc.h / 2 + 0.4);
+  if (gift) {                                         // gift mode: pick when the pigeon comes (replaces the phase picker)
+    const g = GIFT_CHIP;
+    roundRect(g.x, g.y, g.w, g.h, 3);
+    ctx.fillStyle = 'rgba(255,106,138,0.88)'; ctx.fill();
+    ctx.lineWidth = 0.8; ctx.strokeStyle = '#ffd0dc'; ctx.stroke();
+    ctx.fillStyle = '#2a0812';
+    ctx.fillText('GIFT: ' + GIFT_LEVELS[giftLevel].name + ' \u21C4', g.x + g.w / 2, g.y + g.h / 2 + 0.4);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    return;
+  }
   // DEV start-phase picker
   const q = PHASE_CHIP;
   roundRect(q.x, q.y, q.w, q.h, 3);

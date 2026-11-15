@@ -1,0 +1,3 @@
+# Gift-link signing keys must never be committed (see CLAUDE.md "Gift links")
+*.jwk
+.pipeworks/

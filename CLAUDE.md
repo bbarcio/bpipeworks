@@ -124,11 +124,12 @@ Live: https://bbarcio.github.io/bpipeworks/
   crossings, then leaves. Catch = game pauses (state 'mail'), DOM overlay #mail: envelope drops in, flap opens,
   letter rises with fanfare + confetti showing MAIL.message. "Back to work" resumes with 90f invuln. +MAIL.points.
 - Config: the `MAIL` object at the top of the script. `?mailtest` = every phase, 4s in. No pigeon in bonus rounds.
+  Since v0.13.0 the pigeon ONLY flies for verified gift links (or `?mailtest`); arrives 6-15s into the phase.
 - The prize link (MAIL.url, link button, `?mailurl=` override) was REMOVED in v0.10.2 at Bernie's request.
   Real reward delivery is now designed as signed + passphrase-encrypted gift links (next section). Note: any secret
   shipped in client code/repo is readable by players, and unsigned URL overrides enable phishing. Don't reintroduce either.
 
-## Gift links (DESIGN AGREED, NOT BUILT YET)
+## Gift links (v0.13.0, built; waiting on Bernie's public key)
 Bernie gives each recipient a printed QR code. The QR opens the game with an encrypted, signed gift in the URL
 fragment; the recipient catches the Courier Pigeon, types a passphrase Bernie tells them separately, and the letter
 reveals a personal message + a "Claim" button for the gift card's own redemption link.
@@ -176,21 +177,34 @@ Game-side rules:
 - Note: a QR opens Safari, not the home-screen PWA (separate storage). That's fine; the gift works in Safari.
 
 Keys + tooling:
-- `tools/gift-sign.mjs` (Node, no deps, runs on Bernie's computer): `keygen` writes the private key OUTSIDE the
-  repo (e.g. `~/.pipeworks/gift-private.jwk`) and prints the public key JWK; `make` takes message, claim URL,
-  expiry, passphrase and prints the URL (and optionally a QR PNG/SVG).
+- `tools/gift-sign.mjs` (Node 18+, no deps, runs on Bernie's computer):
+  `keygen` writes the private key to `~/.pipeworks/gift-private.jwk` (refuses inside a git repo, chmod 600) and
+  prints the `const GIFT_PUBLIC_KEY = {...};` line to paste. `make --message --name --code --url --expires
+  --qr file.svg [--show]` prompts for the passphrase, self-checks, warns if the URL host isn't in
+  GIFT_ALLOWED_HOSTS or the key doesn't match index.html, and writes a QR SVG (built-in encoder, ECC M, verified
+  with jsQR; never use an online QR site, it would see the gift). `verify "<url>" [--passphrase]` checks a link.
+  `--base http://localhost:8000/` makes links for local testing. Exports qrEncode/makeBlob/checkBlob for tests.
+- `.gitignore` blocks `*.jwk` as a safety net.
+- Code map (index.html): GIFT_PUBLIC_KEY / GIFT_ALLOWED_HOSTS / GIFT_LEVELS / GIFT_KDF_ITER near MAIL; `loadGift()`
+  (runs at startup, async), `openGift()`, `giftClaimUrl()`, `cycleGiftLevel()`; `GIFT_CHIP` replaces the dev
+  PHASE_CHIP on the title in gift mode (tap / [ ] / L1 R1 cycle); tagline becomes the gift line; overlay
+  `showGiftLock()` / `showGiftPrize()` / `tryUnlock()`; game keydown ignores events from the passphrase INPUT.
+  Catching without opening ("Later") keeps the pigeon coming; opening sets `mailDelivered` (reset per game);
+  `giftPrize` stays in memory so a later catch opens unlocked.
+- Tests used (scratch, not in repo): Playwright serves index.html with a throwaway test key swapped in. Never
+  commit a test key into index.html: whoever holds its private half could make gifts the game trusts.
 - The PRIVATE KEY NEVER goes in this repo, in commits, in chat or in an issue. Back it up somewhere safe; losing
   it only means making a new key pair and reprinting unclaimed QRs.
 
-Steps to finish (in order):
-1. Bernie runs `keygen` locally and keeps the private key outside the repo.
-2. Add the PUBLIC key JWK to index.html as `GIFT_PUBLIC_KEY` (Bernie will do this in its own commit).
-3. Set `GIFT_ALLOWED_HOSTS` to the card provider's redemption domain(s).
-4. Build the game side: parse `#g=`, verify, expiry check, gift-only pigeon, EASY/MEDIUM/HARD title chip,
-   passphrase prompt in the #mail overlay, Claim/Copy-code buttons.
-5. Tests (headless): valid gift + right passphrase works; wrong passphrase; tampered byte; wrong key; expired;
-   off-allowlist host; no gift -> 1P trace hash unchanged. Scan a printed test QR on a real iPhone.
-6. Release checklist (VERSION + sw.js CACHE).
+Steps (status):
+1. TODO Bernie: `node tools/gift-sign.mjs keygen` on his computer; back up the private key.
+2. TODO Bernie: paste the PUBLIC key line into index.html (own commit). Until then gift links are ignored.
+3. GIFT_ALLOWED_HOSTS = www.amazon.com, amazon.com for now; change if the provider changes.
+4. DONE v0.13.0: game side.
+5. DONE headless: valid + messy-case passphrase, wrong passphrase, tampered, wrong key, expired, evil host,
+   fragment stripped, reload keeps gift, ?phase ignored, Later -> returns, 2P catch, no-gift 1P/2P traces
+   identical to v0.12.0. TODO: scan a printed QR on a real iPhone and type the passphrase with the iOS keyboard.
+6. DONE: VERSION + sw.js CACHE 0.13.0.
 Open question: card provider (probably Amazon) -> fills `GIFT_ALLOWED_HOSTS` and decides code vs link display.
 
 ## Roadmap
