@@ -125,8 +125,61 @@ Live: https://bbarcio.github.io/bpipeworks/
   letter rises with fanfare + confetti showing MAIL.message. "Back to work" resumes with 90f invuln. +MAIL.points.
 - Config: the `MAIL` object at the top of the script. `?mailtest` = every phase, 4s in. No pigeon in bonus rounds.
 - The prize link (MAIL.url, link button, `?mailurl=` override) was REMOVED in v0.10.2 at Bernie's request.
-  Real reward delivery (e.g. gift card) will be designed later; Bernie plans to use encryption. Note: any secret
-  shipped in client code/repo is readable by players, and URL overrides enable phishing. Don't reintroduce either.
+  Real reward delivery is now designed as signed + passphrase-encrypted gift links (next section). Note: any secret
+  shipped in client code/repo is readable by players, and unsigned URL overrides enable phishing. Don't reintroduce either.
+
+## Gift links (DESIGN AGREED, NOT BUILT YET)
+Bernie gives each recipient a printed QR code. The QR opens the game with an encrypted, signed gift in the URL
+fragment; the recipient catches the Courier Pigeon, types a passphrase Bernie tells them separately, and the letter
+reveals a personal message + a "Claim" button for the gift card's own redemption link.
+
+Security model (what each layer does):
+- SIGNATURE (ECDSA P-256 / SHA-256, WebCrypto) = authenticity. Only Bernie's private key can make a gift the game
+  accepts, so nobody can craft a phishing link that shows a "Claim" button. Bad/missing signature = silently ignored.
+- PASSPHRASE ENCRYPTION (PBKDF2-SHA256 -> AES-256-GCM) = confidentiality. A lost/photographed QR is useless without
+  the passphrase. Never print the passphrase on the same card as the QR.
+- Accepted limit: the game runs on the player's device, so anyone with the link AND passphrase can decrypt it
+  without playing. The game is the wrapping paper, not a vault. Don't promise more than that.
+- The issuer's claim link is single-use; that (not our code) is what stops a card being redeemed twice.
+
+URL + payload:
+- `https://bbarcio.github.io/bpipeworks/#g=<base64url blob>`. FRAGMENT only (never `?query`): never sent to the
+  server, so it stays out of Pages logs, Referer headers and link-preview fetches. The game reads it once on load,
+  then removes it with `history.replaceState`.
+- Blob v1 (binary, kept small so the QR stays scannable when printed ~3 cm):
+  `ver(1)=1 | exp(4, unix days or seconds, plaintext so expired gifts are rejected before the prompt) |
+   salt(16) | iv(12) | ciphertext+GCM tag | signature(64, raw r||s)`. Signature covers every byte before it.
+- Plaintext (JSON, compact keys): `{ m: message, u: claim URL, n: optional recipient name }`.
+- Target total URL under ~400 chars (QR version ~15 at ECC level M). Short messages; long claim URLs grow the code.
+
+Game-side rules:
+- Verify signature + expiry FIRST; only a genuine, unexpired gift turns on the pigeon / passphrase prompt.
+- Passphrase: normalize before deriving (trim, lowercase, collapse spaces, Unicode NFC) so "Biscuit " == "biscuit".
+  Wrong passphrase = AES-GCM fails -> friendly "not quite" retry, no hints. PBKDF2 iterations ~300k
+  (well under a second on a phone; makes offline guessing slow). Bernie should pick passphrases that aren't
+  one-word guesses from the recipient's social media.
+- Claim button: only opens https URLs whose host is on `GIFT_ALLOWED_HOSTS` (defense in depth if the key ever
+  leaks). Show the destination domain on the button. Open with `rel=noopener`.
+- No gift in the URL = game behaves exactly as today. 1P trace hash must be unchanged.
+- Decrypted gift may be kept in sessionStorage so a reload doesn't need the passphrase again; never localStorage.
+- Note: a QR opens Safari, not the home-screen PWA (separate storage). That's fine; the gift works in Safari.
+
+Keys + tooling:
+- `tools/gift-sign.mjs` (Node, no deps, runs on Bernie's computer): `keygen` writes the private key OUTSIDE the
+  repo (e.g. `~/.pipeworks/gift-private.jwk`) and prints the public key JWK; `make` takes message, claim URL,
+  expiry, passphrase and prints the URL (and optionally a QR PNG/SVG).
+- The PRIVATE KEY NEVER goes in this repo, in commits, in chat or in an issue. Back it up somewhere safe; losing
+  it only means making a new key pair and reprinting unclaimed QRs.
+
+Steps to finish (in order):
+1. Bernie runs `keygen` locally and keeps the private key outside the repo.
+2. Add the PUBLIC key JWK to index.html as `GIFT_PUBLIC_KEY` (Bernie will do this in its own commit).
+3. Set `GIFT_ALLOWED_HOSTS` to the card provider's redemption domain(s).
+4. Build the game side: parse `#g=`, verify, expiry check, passphrase prompt in the #mail overlay, Claim button.
+5. Tests (headless): valid gift + right passphrase works; wrong passphrase; tampered byte; wrong key; expired;
+   off-allowlist host; no gift -> 1P trace hash unchanged. Scan a printed test QR on a real iPhone.
+6. Release checklist (VERSION + sw.js CACHE).
+Open question: does the pigeon fly for everyone (prize only for gift holders) or only when a valid gift is present?
 
 ## Roadmap
 - Invisible-girder bonus rounds (arcade: some later bonus rounds)
