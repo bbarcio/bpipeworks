@@ -113,7 +113,7 @@
    v0.3: phase schedule, Pincer crabs, coin drops, bonus coin round,
          Jolt block (3-use shockwave), 1-up at 20,000
    ===================================================================== */
-const VERSION = '0.13.4';
+const VERSION = '0.14.0';
 // Arcade CRTs showed 256x224 on a 4:3 tube, so pixels were ~7:6 wide. ?square for square pixels.
 const PIXEL_ASPECT = /[?&]square/.test(location.search) ? 1 : 7 / 6;
 const W = 256, H = 224;
@@ -218,6 +218,7 @@ const TUNE = {
   gnatHopVy: 2.6, gnatGrav: 0.14,    // ~24px hops
   flyScale: 1.3,                     // HD fly drawn 30% larger
   // Ice (v0.9.0)
+  howto: true,       // v0.14.0: pause on a short demo the first time each newcomer appears in a game
   slugFrom: 9, slugFirst: 8, slugEvery: 16, slugMax: 2,   // Frost Slugs: from Phase 9; seconds
   slugSpeed: 0.45, slugFreezeTime: 75,                    // frames it spends icing a girder (bump it!)
   iceFriction: 0.035, iceSkid: 0.05, iceAccel: 0.06,      // worker physics on ice (normal: 0.15 / 0.20 / 0.10); ~26px coast
@@ -369,7 +370,7 @@ window.addEventListener('keydown', e => {
     else if (P1_JUMP_KEYS.includes(e.code)) input.jumpPressed = true;
     else if (P2_JUMP_KEYS.includes(e.code)) input2.jumpPressed = true;
   }
-  if (e.code === 'Enter' || e.code === 'Space') startTap = true;
+  if (e.code === 'Enter' || JUMP_KEYS.includes(e.code) || P1_JUMP_KEYS.includes(e.code)) startTap = true;   // any jump key starts / continues
   if (e.code === 'KeyH' && !e.repeat && state === 'title') toggleHD();
   if (state === 'title' && (e.code === 'Digit1' || e.code === 'Digit2') && twoP !== (e.code === 'Digit2')) togglePlayers();
   if (state === 'title' && (e.code === 'BracketLeft' || e.code === 'Minus')) setStartPhase(startPhase - 1);
@@ -467,11 +468,13 @@ function pollInput() {
       if (P(5)) setStartPhase(startPhase + 1);
       if (P(3)) toggleHD();
       if (P(2)) togglePlayers();                       // Square: 1 or 2 players
-      if (P(0) || P(9)) startTap = true;
+      if (P(0) || P(1) || P(9)) startTap = true;
     } else if (state === 'mail') {
       if (P(0) || P(9)) closeMail();
+    } else if (state === 'howto') {
+      if (P(0) || P(1) || P(9)) startTap = true;
     } else if (state === 'gameover') {
-      if (P(0) || P(9)) startTap = true;
+      if (P(0) || P(1) || P(9)) startTap = true;
     } else if (state === 'play') {
       [input, input2].forEach((inp, n) => { const q = pad.out[n].pressed; if (q.has(0) || q.has(1)) inp.jumpPressed = true; });
     }
@@ -1044,6 +1047,7 @@ function startGame() {
   setJoltHits(3);
   sfx.start();
   mailDelivered = false;
+  howtoSeen = new Set(); howtoQueue = []; howto = null;   // every new game shows the demos again
   beginPhase(gift ? 1 : startPhase, true);          // gift mode always starts at phase 1
 }
 
@@ -1075,6 +1079,7 @@ function beginPhase(n, gameStart = false) {
   });
   showBanner('PHASE ' + n, phaseSubtitle(n));
   if (!gameStart) sfx.phase();
+  queueHowto(n);
 }
 function showBanner(a, b, t = 150) { bannerLines = [a, b]; banner = t; }
 
@@ -1800,6 +1805,8 @@ function update() {
       updateFx();
       checkPhase();
     }
+  } else if (state === 'howto') {
+    updateHowto();
   } else if (state === 'mail') {
     // paused while the letter is open
   } else if (state === 'gameover') {
@@ -2512,8 +2519,9 @@ function drawMailBird() {
   }
 }
 
-function drawIcicles() {
-  for (const ic of icicles) {
+function drawIcicles() { for (const ic of icicles) drawIcicle(ic); }
+function drawIcicle(ic) {
+  {
     const x = ic.x + (ic.state === 'shake' ? Math.sin(frameCount * 1.8) * 0.6 : 0), y = ic.y;
     const L = Math.max(0.6, ic.len), w = 1.4 + L * 0.14;
     ctx.beginPath(); ctx.moveTo(x - w, y); ctx.lineTo(x + w, y); ctx.lineTo(x, y + L); ctx.closePath();
@@ -2710,14 +2718,15 @@ function drawFreezeAura(e) {                                         // both mod
   for (let k = 0; k < 4; k++) { const a = frameCount * 0.15 + k * Math.PI / 2;
     R(Math.round(e.x + Math.cos(a) * 9), Math.round(e.y - 4 + Math.sin(a) * 4), 1, 1, '#ffffff'); }
 }
-function drawEnemies() {
-  for (const e of enemies) {
-    if (e.state === 'poof') continue;
+function drawEnemies() { for (const e of enemies) drawEnemy(e); }
+function drawEnemy(e) {                                  // also used by the how-to demos
+  {
+    if (e.state === 'poof') return;
     if (e.kind === 'slug' && e.state === 'freezing') drawFreezeAura(e);
     if (HD && e.kind === 'slug') {
       wrapDraw(e.x + (e.state === 'freezing' ? Math.sin(frameCount * 1.5) * 0.4 : 0), 8, x => {
         ctx.save(); ctx.translate(x, e.y); ctx.scale(e.dir, 1); slugHD(e.anim * 2, e.state === 'freezing'); ctx.restore(); });
-      continue;
+      return;
     }
     if (HD) {
       const upside = e.state !== 'walk';
@@ -2741,7 +2750,7 @@ function drawEnemies() {
         }
         ctx.restore();
       });
-      continue;
+      return;
     }
     const set = ESPR[e.kind === 'pinc' && e.angry ? 'pincMad' : e.kind][e.level];
     const legs = e.kind === 'gnat'
@@ -2756,10 +2765,253 @@ function drawEnemies() {
     if (e.kind === 'gnat') {                                   // pixel fly drawn at 20x12 to match its bigger hitbox
       const gx = Math.round(e.x - 10) + (x0 - Math.round(e.x - s.w / 2)), gy = Math.round(e.y - 12);
       for (const off of [0, -W, W]) if (gx + off > -20 && gx + off < W + 20) ctx.drawImage(img, gx + off, gy, 20, 12);
-      continue;
+      return;
     }
     blitWrap(img, x0, Math.round(e.y - s.h), s.w);
   }
+}
+// ===================== HOW-TO DEMOS (v0.14.0) =====================
+// The first time each newcomer shows up in a game, the game pauses on a looping mini-scene (drawn with the
+// real art, both art modes) showing how to beat it. Any jump (tap, Space, Cross) continues. Shown again
+// every new game (Bernie). Puppets only: nothing here touches the real game state or Math.random.
+const HOWTO_ORDER = ['snap', 'pinc', 'gnat', 'slug', 'icicle'];
+const HOWTO_INFO = {
+  snap: ['NEW CRITTER', 'SNAPPER'], pinc: ['NEW CRITTER', 'PINCER'], gnat: ['NEW CRITTER', 'GNAT'],
+  slug: ['NEW CRITTER', 'FROST SLUG'], icicle: ['NEW HAZARD', 'ICICLES'],
+};
+let howtoSeen = new Set(), howtoQueue = [], howto = null;
+function queueHowto(n) {
+  if (!TUNE.howto) return;
+  const here = new Set(phaseRoster(n));
+  if (n >= TUNE.slugFrom) here.add('slug');
+  if (n >= TUNE.icicleFrom) here.add('icicle');
+  howtoQueue = HOWTO_ORDER.filter(k => here.has(k) && !howtoSeen.has(k));
+  if (howtoQueue.length) { state = 'howto'; startHowto(howtoQueue.shift()); }
+}
+function startHowto(kind) {
+  howtoSeen.add(kind);
+  howto = { kind, t: 0, sc: newHowtoScene(kind) };
+}
+function updateHowto() {
+  howto.t++;
+  const sc = howto.sc;
+  sc.t++;
+  HOWTO_SCENES[howto.kind](sc);
+  hStepFx(sc);
+  if (sc.done && ++sc.doneT > 50) howto.sc = newHowtoScene(howto.kind);      // loop
+  if (howto.t > 20 && (startTap || input.jumpPressed || input2.jumpPressed)) {
+    if (howtoQueue.length) startHowto(howtoQueue.shift());
+    else { howto = null; state = 'play'; }
+    sfx.step(0);
+  }
+}
+// Scene space: 200 x 100. Girder top 40 (x 52-148), floor 88. Worker h 16, so a bonk tops out at y 64.
+const HG = { gy: 40, x0: 52, x1: 148, fy: 88, w: 200, h: 100 };
+function newHowtoScene(kind) {
+  const sc = { t: 0, step: 0, wait: 0, done: false, doneT: 0, bumpX: 0, bumpT: 99, fx: [], pops: [], cap: ['', ''],
+    w: { id: 0, x: 84, y: HG.fy, face: 1, vx: 0, vy: 0, onGround: true, onGirder: false, skid: false, anim: 0,
+         dead: false, invuln: 0, stun: 0, h: 16, walkTo: null } };
+  const c = (k, x) => ({ kind: k, x, y: HG.gy, dir: 1, state: 'walk', level: 0, anim: 0, onGround: true,
+                         angry: false, flipT: 999, vx: 0, vy: 0, hop: 0 });
+  if (kind === 'snap') sc.c = c('snap', HG.x0 + 2);
+  if (kind === 'pinc') sc.c = c('pinc', HG.x0 + 2);
+  if (kind === 'gnat') { sc.c = c('gnat', HG.x0 + 2); sc.w.x = 96; }
+  if (kind === 'slug') { sc.c = c('slug', HG.x0 + 2); sc.w.x = 100; }
+  if (kind === 'icicle') { sc.ic = { x: 100, y: HG.gy + 8, len: 0, state: 'grow', t: 0, vy: 0 }; sc.w.x = 100; }
+  return sc;
+}
+// --- worker puppet: walk / jump / bonk the girder from below / land on floor or girder ---
+function hJump(sc, vx = 0) { const w = sc.w; w.vy = -TUNE.jumpVel; w.vx = vx; w.onGround = false; w.walkTo = null; }
+function hStepWorker(sc) {
+  const w = sc.w;
+  if (w.walkTo !== null && w.onGround) {
+    const d = w.walkTo - w.x;
+    if (Math.abs(d) <= 1.2) { w.x = w.walkTo; w.vx = 0; w.walkTo = null; } else { w.vx = Math.sign(d) * 1.2; w.face = Math.sign(d); }
+  } else if (w.onGround) w.vx = 0;
+  const under = w.x > HG.x0 - 3 && w.x < HG.x1 + 3, prevY = w.y;
+  w.x += w.vx;
+  if (w.onGround && Math.abs(w.vx) > 0.05) w.anim += Math.abs(w.vx) * 0.11;
+  if (w.onGround && w.onGirder && (w.x < HG.x0 - 4 || w.x > HG.x1 + 4)) { w.onGround = false; w.onGirder = false; w.vy = 0; }
+  if (w.onGround) return;
+  w.vy = Math.min(w.vy + TUNE.gravity, TUNE.maxFall); w.y += w.vy;
+  const ceil = HG.gy + 8 + w.h;
+  if (w.vy < 0 && under && !w.onGirder && prevY >= ceil && w.y < ceil) { w.y = ceil; w.vy = 0; hBump(sc, w.x); }
+  const over = w.x > HG.x0 - 4 && w.x < HG.x1 + 4;
+  if (w.vy > 0 && over && prevY <= HG.gy && w.y >= HG.gy) { w.y = HG.gy; w.onGround = true; w.onGirder = true; w.vy = 0; w.vx = 0; }
+  else if (w.vy > 0 && w.y >= HG.fy) { w.y = HG.fy; w.onGround = true; w.onGirder = false; w.vy = 0; w.vx = 0; }
+}
+function hBump(sc, x) {
+  sc.bumpX = x; sc.bumpT = 0; sfx.bump && sfx.bump();
+  const e = sc.c;
+  if (!e || Math.abs(e.x - x) > 12) return;
+  if (e.kind === 'slug') { hPoof(sc, e); return; }
+  if (e.state !== 'walk' || !e.onGround) { sc.missed = true; return; }   // a gnat in mid-hop can't be flipped
+  if (e.kind === 'pinc' && !e.angry) { e.angry = true; e.vy = -1.4; e.onGround = false; sc.angered = true; return; }
+  e.state = 'flipped'; e.vy = -2.2; e.onGround = false; sc.flipped = true;
+}
+function hKick(sc) {
+  const e = sc.c, w = sc.w;
+  e.state = 'kicked'; e.vx = (e.x < w.x ? -1 : 1) * 1.8; e.vy = -2.6; e.onGround = false;
+  sc.pops.push({ x: e.x, y: e.y - 12, text: '800', t: 0 });
+  sfx.kick();
+}
+function hPoof(sc, e) {
+  e.state = 'poof';
+  for (let k = 0; k < 10; k++) { const a = k / 10 * Math.PI * 2;
+    sc.fx.push({ x: e.x, y: e.y - 4, vx: Math.cos(a) * 1.1, vy: Math.sin(a) * 1.1 - 0.6, life: 22, color: k % 2 ? '#e8fbff' : '#7fd0f0' }); }
+  sc.pops.push({ x: e.x, y: e.y - 10, text: '500', t: 0 });
+  sfx.slugPop && sfx.slugPop();
+}
+function hStepFx(sc) {
+  sc.bumpT++;
+  for (const f of sc.fx) { f.x += f.vx; f.y += f.vy; f.vy += 0.08; f.life--; }
+  sc.fx = sc.fx.filter(f => f.life > 0);
+  for (const p of sc.pops) p.t++;
+  const e = sc.c;
+  if (!e || e.state === 'poof') return;
+  if (e.state === 'kicked') { e.vy += 0.2; e.x += e.vx; e.y += e.vy; if (e.y > HG.h + 30) sc.done = true; return; }
+  if (!e.onGround) {                                   // pop-up from a bump, or a gnat hop
+    e.vy += e.kind === 'gnat' && e.state === 'walk' ? 0.15 : 0.2; e.y += e.vy; e.x += e.vx;
+    if (e.vy > 0 && e.y >= HG.gy) { e.y = HG.gy; e.vy = 0; e.vx = 0; e.onGround = true; e.hop = 0; }
+  }
+}
+// Walk the critter along the girder (stays on it)
+function hCrawl(e, speed) {
+  if (e.state !== 'walk' || !e.onGround) return;
+  e.x += speed * e.dir; e.anim += e.kind === 'slug' ? 0.08 : speed * 0.25;
+}
+// Climb onto the girder from the side away from the critter, then walk over and kick it
+function hClimbAndKick(sc) {
+  const w = sc.w, e = sc.c;
+  if (sc.step === 0) { sc.side = e.x > 100 ? -1 : 1; w.walkTo = sc.side > 0 ? HG.x1 + 10 : HG.x0 - 14; sc.step = 1; }
+  else if (sc.step === 1 && w.walkTo === null && w.onGround) { hJump(sc, -sc.side * 1.2); w.face = -sc.side; sc.step = 2; }
+  else if (sc.step === 2 && w.onGround && w.onGirder) { w.walkTo = e.x + sc.side * 9; sc.step = 3; }
+  else if (sc.step === 3 && Math.abs(w.x - e.x) < 11) { hKick(sc); w.walkTo = null; sc.step = 4; sc.cap = ['Kick it off', 'while it’s flipped!']; }
+}
+const HOWTO_SCENES = {
+  snap(sc) {
+    const e = sc.c, w = sc.w;
+    if (!sc.flipped) {
+      hCrawl(e, 0.42);
+      sc.cap = ['Jump under the girder', 'to BUMP it over'];
+      if (w.onGround && e.x >= w.x - 4) hJump(sc);
+    } else if (sc.step === 0 && ++sc.wait < 30) sc.cap = ['Flipped!', 'Quick, before it gets up…'];
+    else hClimbAndKick(sc);
+    hStepWorker(sc);
+  },
+  pinc(sc) {
+    const e = sc.c, w = sc.w;
+    if (!sc.angered) {
+      hCrawl(e, 0.42); sc.cap = ['Bump it once…', ''];
+      if (w.onGround && e.x >= w.x - 4) hJump(sc);
+    } else if (!sc.flipped) {
+      hCrawl(e, 0.7); sc.cap = ['First bump makes it ANGRY!', 'Bump it AGAIN to flip it'];
+      if (w.onGround && w.walkTo === null && w.x < 120) w.walkTo = 124;
+      if (w.onGround && w.walkTo === null && e.x >= w.x - 5 && e.onGround) hJump(sc);
+    } else if (sc.step === 0 && ++sc.wait < 30) sc.cap = ['Flipped!', ''];
+    else hClimbAndKick(sc);
+    hStepWorker(sc);
+  },
+  gnat(sc) {
+    const e = sc.c, w = sc.w;
+    if (!sc.flipped) {
+      if (e.onGround && e.state === 'walk' && ++e.hop > 26 && e.x < 100) {           // hop along: 26f rest, then a hop
+        e.onGround = false; e.vy = -2.4; e.vx = 0.9; e.hop = 0;
+      }
+      e.anim += 0.1;
+      if (!sc.missed) {
+        sc.cap = ['Gnats HOP.', 'Bumping one in the air won’t work…'];
+        if (w.onGround && w.x === 96 && !e.onGround && e.x >= 90 && e.x < 94) hJump(sc);   // bonk lands as it flies over
+      } else {
+        sc.cap = ['Missed: it was in the air!', 'Bump it while it RESTS'];
+        if (w.onGround && w.walkTo === null && w.x !== 112) w.walkTo = 112;
+        if (w.onGround && w.walkTo === null && e.onGround && e.x > 105) hJump(sc);
+      }
+    } else if (sc.step === 0 && ++sc.wait < 30) sc.cap = ['Got it!', ''];
+    else hClimbAndKick(sc);
+    hStepWorker(sc);
+  },
+  slug(sc) {
+    const e = sc.c, w = sc.w;
+    if (e.state === 'walk') {
+      hCrawl(e, TUNE.slugSpeed);
+      sc.cap = ['Frost Slugs crawl to the middle', 'and ICE the girder (slippery!)'];
+      if (e.x >= 100) { e.x = 100; e.state = 'freezing'; sc.freezeT = 0; }
+    } else if (e.state === 'freezing') {
+      e.anim += 0.3; sc.cap = ['Bump it to POP it!', 'Don’t touch one: it’s deadly'];
+      if (++sc.freezeT === 30) hJump(sc);
+    } else if (++sc.wait > 70) sc.done = true;
+    else sc.cap = ['Popped! It can’t be flipped', 'or kicked. Just bump it.'];
+    hStepWorker(sc);
+  },
+  icicle(sc) {
+    const ic = sc.ic, w = sc.w;
+    ic.t++;
+    if (ic.state === 'grow') {
+      ic.len = Math.min(7, ic.t / 90 * 7); sc.cap = ['Icicles grow under the girders…', ''];
+      if (ic.t >= 90) { ic.state = 'shake'; ic.t = 0; }
+    } else if (ic.state === 'shake') {
+      sc.cap = ['When one WOBBLES,', 'get out from under it!'];
+      if (ic.t === 14) w.walkTo = 140;
+      if (ic.t >= 50) { ic.state = 'fall'; ic.t = 0; }
+    } else if (ic.state === 'fall') {
+      ic.vy += 0.25; ic.y += ic.vy;
+      if (ic.y + ic.len >= HG.fy) {
+        ic.state = 'gone';
+        for (let k = 0; k < 8; k++) sc.fx.push({ x: ic.x, y: HG.fy - 2, vx: (k - 3.5) * 0.35, vy: -1 - (k % 3) * 0.4, life: 20, color: '#c8f0ff' });
+      }
+    } else if (++sc.wait > 60) sc.done = true;
+    else sc.cap = ['Phew! A falling icicle', 'is deadly'];
+    hStepWorker(sc);
+  },
+};
+function drawHowto() {
+  if (!howto) return;
+  const [kicker, name] = HOWTO_INFO[howto.kind], sc = howto.sc, th = currentTheme();
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+  roundRect(20, 24, 216, 180, 5);
+  ctx.fillStyle = 'rgba(10,14,34,0.96)'; ctx.fill();
+  ctx.lineWidth = 1; ctx.strokeStyle = '#86a8ff'; ctx.stroke();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold 6px ui-monospace, Menlo, Consolas, monospace'; ctx.fillStyle = '#ff9a1f';
+  ctx.fillText(kicker + '!', W / 2, 33);
+  ctx.font = 'bold 11px ui-monospace, Menlo, Consolas, monospace'; ctx.fillStyle = '#ffffff';
+  ctx.fillText(name, W / 2, 44);
+  // --- the mini scene ---
+  ctx.save(); ctx.translate(28, 54);
+  ctx.beginPath(); ctx.rect(0, 0, HG.w, HG.h); ctx.clip();
+  ctx.fillStyle = '#05060f'; ctx.fillRect(0, 0, HG.w, HG.h);
+  for (let r = 0; r < 2; r++) {                                    // floor bricks
+    const y = HG.fy + r * 8;
+    ctx.fillStyle = C.mortar; ctx.fillRect(0, y, HG.w, 8);
+    for (let bx = -16 + (r % 2 ? 8 : 0); bx < HG.w; bx += 16) {
+      ctx.fillStyle = C.brick; ctx.fillRect(bx + 1, y + 1, 15, 6);
+      ctx.fillStyle = C.brickHi; ctx.fillRect(bx + 1, y + 1, 15, 1);
+    }
+  }
+  for (let tx = HG.x0; tx < HG.x1; tx += 8) {                     // the girder, with the bump wave
+    let lift = 0;
+    if (sc.bumpT < 14) { const d = Math.abs(tx + 4 - sc.bumpX); if (d < 14) lift = Math.sin(Math.PI * sc.bumpT / 14) * 4 * (1 - d / 16); }
+    const y = HG.gy - Math.round(lift);
+    th.tile(tx, y, HG.gy);
+    if (HD) { ctx.fillStyle = linear(0, y, 0, y + 8, ['rgba(255,255,255,0.16)', 'rgba(255,255,255,0)', 'rgba(0,0,0,0.28)']); ctx.fillRect(tx, y, 8, 8); }
+  }
+  if (sc.ic && sc.ic.state !== 'gone') drawIcicle(sc.ic);
+  if (sc.c) drawEnemy(sc.c);
+  drawPlayer(sc.w);
+  for (const f of sc.fx) { ctx.fillStyle = f.color; ctx.fillRect(Math.round(f.x), Math.round(f.y), 1.5, 1.5); }
+  ctx.font = 'bold 7px ui-monospace, Menlo, Consolas, monospace';
+  for (const p of sc.pops) if (p.t < 60) { ctx.fillStyle = '#ffffff'; ctx.fillText(p.text, p.x, p.y - Math.min(p.t, 24) * 0.4); }
+  ctx.restore();
+  // --- captions + prompt ---
+  ctx.font = FONT; ctx.fillStyle = '#ffd23f';
+  ctx.fillText(sc.cap[0], W / 2, 166);
+  ctx.fillText(sc.cap[1], W / 2, 177);
+  if (howto.t > 20 && Math.floor(frameCount / 30) % 2 === 0) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(howtoQueue.length ? 'PRESS JUMP FOR NEXT' : 'PRESS JUMP TO SKIP', W / 2, 194);   // same words for every device
+  }
+  ctx.font = FONT; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
 }
 function drawCoins() {
   for (const c of coins) {
@@ -2880,7 +3132,7 @@ function drawTitle() {
   }
   if (Math.floor(frameCount / 30) % 2 === 0) {
     ctx.fillStyle = C.hud;
-    ctx.fillText(padActive() ? 'PRESS \u2715 TO START' : isTouch ? 'TAP TO START' : 'PRESS SPACE TO START', W / 2, 160);
+    ctx.fillText('PRESS JUMP TO START', W / 2, 160);           // same words for touch, keyboard and controller
   }
   ctx.fillStyle = '#888';
   const help = twoP
@@ -3037,6 +3289,7 @@ function render() {
   drawHUD();
   if (state === 'play') drawBanner();
   if (state === 'gameover') drawGameOver();
+  if (state === 'howto') drawHowto();
   if (state === 'title') { drawTitle(); drawVersion(); }
   if (DEBUG) drawDebug();
   if (PADTEST) drawPadTest();

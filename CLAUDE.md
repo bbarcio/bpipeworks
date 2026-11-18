@@ -67,6 +67,18 @@ Live: https://bbarcio.github.io/bpipeworks/
 - TEMPORARY DEV FEATURE (v0.9.1): title-screen start-phase picker (`PHASE_CHIP`, `startPhase`, 1-30, wraps,
   saved in localStorage `pipeworks.startPhase`). Remove before a real release.
 
+## How-to demo cards (v0.14.0)
+- Bernie: players were confused about what to do. The first time each newcomer appears IN A GAME (snapper ph1,
+  pincer ph4, gnat ph6, Frost Slug ph9, icicles ph16), `queueHowto(n)` (end of beginPhase) pauses in state
+  'howto' on a card with a looping mini-scene + captions. Shown again every new game (`howtoSeen` reset in
+  startGame). Starting later (dev picker) queues every newcomer present, in HOWTO_ORDER. Sparks have no card.
+- Any jump (tap, Space/Enter/jump keys, Cross/Circle/Options) continues. Prompt is device-neutral: "PRESS JUMP TO SKIP" ("PRESS JUMP FOR NEXT" if more queued); presses in
+  the first 20 frames are ignored. The press is consumed: the worker doesn't jump when play resumes.
+- Scenes are puppets (`HOWTO_SCENES`, `newHowtoScene`, `hStepWorker`, `hBump`, `hClimbAndKick`) in a 200x100
+  space drawn with the REAL art via `drawEnemy(e)` / `drawPlayer(p)` / `drawIcicle(ic)` / theme tiles, so HD and
+  pixel modes both work. They never touch game state or Math.random. Gnat scene shows a mid-air miss first.
+- `TUNE.howto = false` turns cards off (trace harnesses set it so 1P/2P traces stay comparable).
+
 ## Sound notes
 - Direction-change squeak has 6 presets in `SQUEAKS` (BLIP is the default — Bernie's pick; also sneaker, court, duck, skid, squelch).
   Choose with `?squeak=name` (saved in localStorage) or `TUNE.squeakStyle`.
@@ -76,7 +88,8 @@ Live: https://bbarcio.github.io/bpipeworks/
 - Gamepad API, standard mapping (PS5 DualSense, Xbox, MFi). `readPad()` merges into `pollInput()`.
   Move: left stick (dead zone 0.35) or d-pad 14/15. Jump: Cross(0) or Circle(1).
   Title: Cross/Options(9) start, L1(4)/R1(5) start phase, Triangle(3) art. Envelope: Cross/Options closes.
-  Game over: Cross/Options. Touch controls hide while a pad was used in the last 20s; any touch brings them back.
+  Game over: Cross/Options. v0.14.0: title says "PRESS JUMP TO START" on every device; any jump key (Space, Z, X, Up,
+  W, /) or Circle also starts / continues. Touch controls hide while a pad was used in the last 20s; any touch brings them back.
   v0.13.4 (Bernie: pad felt laggier than touch, missed quick 2nd jumps): `padSample()` polls getGamepads every
   4ms (`setInterval`, starts on connect, stops when no pads) and latches button presses into `PAD.latch` until
   `readPad()` merges them, so taps shorter than a frame aren't lost. Stick: dead zone 0.35 -> `PAD.dead` 0.2, plus
