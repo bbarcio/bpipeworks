@@ -88,7 +88,8 @@ Live: https://bbarcio.github.io/bpipeworks/
 - Gamepad API, standard mapping (PS5 DualSense, Xbox, MFi). `readPad()` merges into `pollInput()`.
   Move: left stick (dead zone 0.35) or d-pad 14/15. Jump: Cross(0) or Circle(1).
   Title: Cross/Options(9) start, L1(4)/R1(5) start phase, Triangle(3) art. Envelope: Cross/Options closes.
-  Game over: Cross/Options. Touch controls hide while a pad was used in the last 20s; any touch brings them back.
+  Game over: Cross/Options. v0.14.0: title says "PRESS JUMP TO START" on every device; any jump key (Space, Z, X, Up,
+  W, /) or Circle also starts / continues. Touch controls hide while a pad was used in the last 20s; any touch brings them back.
   v0.13.4 (Bernie: pad felt laggier than touch, missed quick 2nd jumps): `padSample()` polls getGamepads every
   4ms (`setInterval`, starts on connect, stops when no pads) and latches button presses into `PAD.latch` until
   `readPad()` merges them, so taps shorter than a frame aren't lost. Stick: dead zone 0.35 -> `PAD.dead` 0.2, plus

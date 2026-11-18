@@ -370,7 +370,7 @@ window.addEventListener('keydown', e => {
     else if (P1_JUMP_KEYS.includes(e.code)) input.jumpPressed = true;
     else if (P2_JUMP_KEYS.includes(e.code)) input2.jumpPressed = true;
   }
-  if (e.code === 'Enter' || e.code === 'Space') startTap = true;
+  if (e.code === 'Enter' || JUMP_KEYS.includes(e.code) || P1_JUMP_KEYS.includes(e.code)) startTap = true;   // any jump key starts / continues
   if (e.code === 'KeyH' && !e.repeat && state === 'title') toggleHD();
   if (state === 'title' && (e.code === 'Digit1' || e.code === 'Digit2') && twoP !== (e.code === 'Digit2')) togglePlayers();
   if (state === 'title' && (e.code === 'BracketLeft' || e.code === 'Minus')) setStartPhase(startPhase - 1);
@@ -468,13 +468,13 @@ function pollInput() {
       if (P(5)) setStartPhase(startPhase + 1);
       if (P(3)) toggleHD();
       if (P(2)) togglePlayers();                       // Square: 1 or 2 players
-      if (P(0) || P(9)) startTap = true;
+      if (P(0) || P(1) || P(9)) startTap = true;
     } else if (state === 'mail') {
       if (P(0) || P(9)) closeMail();
     } else if (state === 'howto') {
       if (P(0) || P(1) || P(9)) startTap = true;
     } else if (state === 'gameover') {
-      if (P(0) || P(9)) startTap = true;
+      if (P(0) || P(1) || P(9)) startTap = true;
     } else if (state === 'play') {
       [input, input2].forEach((inp, n) => { const q = pad.out[n].pressed; if (q.has(0) || q.has(1)) inp.jumpPressed = true; });
     }
@@ -3132,7 +3132,7 @@ function drawTitle() {
   }
   if (Math.floor(frameCount / 30) % 2 === 0) {
     ctx.fillStyle = C.hud;
-    ctx.fillText(padActive() ? 'PRESS \u2715 TO START' : isTouch ? 'TAP TO START' : 'PRESS SPACE TO START', W / 2, 160);
+    ctx.fillText('PRESS JUMP TO START', W / 2, 160);           // same words for touch, keyboard and controller
   }
   ctx.fillStyle = '#888';
   const help = twoP
