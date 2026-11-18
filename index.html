@@ -3008,9 +3008,8 @@ function drawHowto() {
   ctx.fillText(sc.cap[0], W / 2, 166);
   ctx.fillText(sc.cap[1], W / 2, 177);
   if (howto.t > 20 && Math.floor(frameCount / 30) % 2 === 0) {
-    const what = howtoQueue.length ? 'FOR NEXT' : 'TO START';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(padActive() ? `PRESS ✕ ${what}` : isTouch ? `TAP ${what}` : `PRESS SPACE ${what}`, W / 2, 194);
+    ctx.fillText(howtoQueue.length ? 'PRESS JUMP FOR NEXT' : 'PRESS JUMP TO SKIP', W / 2, 194);   // same words for every device
   }
   ctx.font = FONT; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
 }

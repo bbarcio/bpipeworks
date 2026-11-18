@@ -72,7 +72,7 @@ Live: https://bbarcio.github.io/bpipeworks/
   pincer ph4, gnat ph6, Frost Slug ph9, icicles ph16), `queueHowto(n)` (end of beginPhase) pauses in state
   'howto' on a card with a looping mini-scene + captions. Shown again every new game (`howtoSeen` reset in
   startGame). Starting later (dev picker) queues every newcomer present, in HOWTO_ORDER. Sparks have no card.
-- Any jump (tap, Space/Enter/jump keys, Cross/Circle/Options) continues ("FOR NEXT" if more queued); presses in
+- Any jump (tap, Space/Enter/jump keys, Cross/Circle/Options) continues. Prompt is device-neutral: "PRESS JUMP TO SKIP" ("PRESS JUMP FOR NEXT" if more queued); presses in
   the first 20 frames are ignored. The press is consumed: the worker doesn't jump when play resumes.
 - Scenes are puppets (`HOWTO_SCENES`, `newHowtoScene`, `hStepWorker`, `hBump`, `hClimbAndKick`) in a 200x100
   space drawn with the REAL art via `drawEnemy(e)` / `drawPlayer(p)` / `drawIcicle(ic)` / theme tiles, so HD and
