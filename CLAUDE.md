@@ -77,7 +77,15 @@ Live: https://bbarcio.github.io/bpipeworks/
   Move: left stick (dead zone 0.35) or d-pad 14/15. Jump: Cross(0) or Circle(1).
   Title: Cross/Options(9) start, L1(4)/R1(5) start phase, Triangle(3) art. Envelope: Cross/Options closes.
   Game over: Cross/Options. Touch controls hide while a pad was used in the last 20s; any touch brings them back.
+  v0.13.4 (Bernie: pad felt laggier than touch, missed quick 2nd jumps): `padSample()` polls getGamepads every
+  4ms (`setInterval`, starts on connect, stops when no pads) and latches button presses into `PAD.latch` until
+  `readPad()` merges them, so taps shorter than a frame aren't lost. Stick: dead zone 0.35 -> `PAD.dead` 0.2, plus
+  phone-style early stop `stickDir()`: easing back `PAD.pull` 0.3 from the furthest push stops (reverse still needs
+  the other side past 0.2, so a spring-back release never blips the wrong way). D-pad unchanged.
+  `?padtest` overlay (`drawPadTest`): jumps seen, "caught between frames" (presses the old code would have
+  missed), and controller data age at press (now - gamepad.timestamp). Bluetooth lag itself can't be fixed in code.
 - Test note: Node 21+ has a read-only global `navigator`; fake it with Object.defineProperty in harnesses.
+  Fake pads in Playwright: addInitScript defines navigator.getGamepads returning a mutable pad object.
 
 ## 2-player co-op (v0.12.0)
 - Simultaneous co-op, separate scores/lives/1UP. `players[0..1]` (each has `input`, `score`, `lives`, `lift`, `stun`,
