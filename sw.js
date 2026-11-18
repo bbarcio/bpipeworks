@@ -1,6 +1,6 @@
 // Pipeworks service worker — offline play after the first online visit.
 // Bump CACHE on every release so phones pick up the new build.
-const CACHE = 'pipeworks-v0.13.4';
+const CACHE = 'pipeworks-v0.14.0';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
