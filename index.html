@@ -113,11 +113,12 @@
    v0.3: phase schedule, Pincer crabs, coin drops, bonus coin round,
          Jolt block (3-use shockwave), 1-up at 20,000
    ===================================================================== */
-const VERSION = '0.13.3';
+const VERSION = '0.13.4';
 // Arcade CRTs showed 256x224 on a 4:3 tube, so pixels were ~7:6 wide. ?square for square pixels.
 const PIXEL_ASPECT = /[?&]square/.test(location.search) ? 1 : 7 / 6;
 const W = 256, H = 224;
 const DEBUG = /[?&]debug/.test(location.search);
+const PADTEST = /[?&]padtest/.test(location.search);   // controller diagnostics overlay
 // DEV (temporary, for vibing): starting phase picker on the title screen. URL ?phase=N still works.
 const PHASE_PICK_MAX = 30;
 let startPhase = 1;
@@ -383,7 +384,38 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 // Title screen: L1 / R1 = starting phase, Triangle = art style.
 // 1 player: every controller drives Player 1. 2 players: PAD.slot[n] = the gamepad index that drives player n.
 // A lone controller goes to Player 2 (Player 1 uses touch or keyboard); with two, the first is P1, the second P2.
-const PAD = { dead: 0.35, prev: [], lastUsed: -1e9, slot: [null, null] };
+// dead: stick dead zone. pull: like the phone stick, easing the stick back this far from the furthest point
+// you pushed it stops the worker (no need to come all the way back to center).
+const PAD = { dead: 0.2, pull: 0.3, prev: [], lastUsed: -1e9, slot: [null, null],
+              sprev: [], latch: [], stick: [], timer: 0 };
+// Between frames, sample the controller every few ms and remember any button press until the game reads it,
+// so a quick tap that starts and ends between two frames is never lost and presses register sooner.
+function padSample() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() || [] : [];
+  let any = false;
+  for (const g of pads) {
+    if (!g || !g.connected) continue;
+    any = true;
+    const sp = PAD.sprev[g.index] || [], L = PAD.latch[g.index] || (PAD.latch[g.index] = new Set());
+    g.buttons.forEach((b, i) => { if (b.pressed && !sp[i]) { L.add(i); if (PADTEST && i <= 1) padStat.edge(g); } });
+    PAD.sprev[g.index] = g.buttons.map(b => b.pressed);
+  }
+  if (!any) { clearInterval(PAD.timer); PAD.timer = 0; }
+}
+const startPadSampler = () => { if (!PAD.timer) PAD.timer = setInterval(padSample, 4); };
+// Stick direction with the phone-style early stop: -1, 0 or 1
+function stickDir(i, ax) {
+  const s = PAD.stick[i] || (PAD.stick[i] = { dir: 0, peak: 0 });
+  const d = ax > PAD.dead ? 1 : ax < -PAD.dead ? -1 : 0;
+  if (!d) { s.dir = 0; s.peak = 0; return 0; }
+  const m = ax * d;                                    // how far it's pushed in that direction
+  if (s.dir !== d) { s.dir = d; s.peak = 0; }
+  s.peak = Math.max(s.peak, m);
+  return m >= s.peak - PAD.pull ? d : 0;
+}
+// ?padtest: counts jump presses and how old the controller data was when the press was first seen
+const padStat = { jumps: 0, rescued: 0, ages: [], last: -1,
+  edge(g) { if (g.timestamp) { this.last = performance.now() - g.timestamp; this.ages.push(this.last); if (this.ages.length > 20) this.ages.shift(); } } };
 function assignPads(idx) {
   for (const s of [0, 1]) if (PAD.slot[s] !== null && !idx.includes(PAD.slot[s])) PAD.slot[s] = null;   // unplugged
   for (const i of idx) {
@@ -397,16 +429,24 @@ function readPad() {
   const out = [blank(), blank()], menu = new Set();      // per player, plus any-pad presses for menus
   const pads = [...(navigator.getGamepads ? navigator.getGamepads() || [] : [])].filter(g => g && g.connected);
   assignPads(pads.map(g => g.index));
+  if (pads.length) startPadSampler();
   for (const g of pads) {
     const owner = !twoP ? 0 : PAD.slot.indexOf(g.index);
     const o = out[owner] || blank();                     // an unassigned 3rd pad still works the menus
     const btn = i => !!(g.buttons[i] && g.buttons[i].pressed);
     const ax = g.axes[0] || 0;
-    if (ax < -PAD.dead || btn(14)) o.left = true;
-    if (ax > PAD.dead || btn(15)) o.right = true;
+    const sx = stickDir(g.index, ax);
+    if (sx < 0 || btn(14)) o.left = true;
+    if (sx > 0 || btn(15)) o.right = true;
     if (btn(0) || btn(1)) o.jump = true;
-    const prev = PAD.prev[g.index] || [];
-    g.buttons.forEach((b, i) => { if (b.pressed && !prev[i]) { o.pressed.add(i); menu.add(i); } });
+    const prev = PAD.prev[g.index] || [], L = PAD.latch[g.index] || new Set();
+    g.buttons.forEach((b, i) => { if (b.pressed && !prev[i]) { o.pressed.add(i); menu.add(i); if (PADTEST && i <= 1 && !L.has(i)) padStat.edge(g); } });
+    for (const i of L) {                                 // presses the sampler caught between frames
+      if (PADTEST && i <= 1) { if (!o.pressed.has(i)) padStat.rescued++; }
+      o.pressed.add(i); menu.add(i);
+    }
+    L.clear();
+    if (PADTEST && (o.pressed.has(0) || o.pressed.has(1))) padStat.jumps++;
     PAD.prev[g.index] = g.buttons.map(b => b.pressed);
     if (o.left || o.right || o.jump || o.pressed.size || Math.abs(ax) > PAD.dead) PAD.lastUsed = frameCount;
   }
@@ -415,7 +455,7 @@ function readPad() {
 const padActive = () => frameCount - PAD.lastUsed < 60 * 20;   // used in the last 20s: hide the touch controls
 // Touch controls show unless a controller is in use, except in 2P when no controller belongs to Player 1
 const showTouch = () => isTouch && (!padActive() || (twoP && PAD.slot[0] === null));
-window.addEventListener('gamepadconnected', () => { PAD.lastUsed = frameCount; });
+window.addEventListener('gamepadconnected', () => { PAD.lastUsed = frameCount; startPadSampler(); });
 
 function pollInput() {
   const pad = readPad();
@@ -2896,6 +2936,22 @@ function drawGameOver() {
   ctx.fillText(p2.inGame ? `I ${p1.score}   II ${p2.score}   Phase ${phase}` : 'Score ' + p1.score + '   Phase ' + phase, W / 2, 128);
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
 }
+function drawPadTest() {
+  const pads = [...(navigator.getGamepads ? navigator.getGamepads() || [] : [])].filter(g => g && g.connected);
+  const g = pads[0], avg = padStat.ages.length ? padStat.ages.reduce((a, b) => a + b, 0) / padStat.ages.length : -1;
+  const ms = v => (v < 0 ? 'n/a' : Math.round(v) + 'ms');
+  const lines = [
+    g ? 'PAD ' + g.id.slice(0, 36) : 'PAD: none (press a button)',
+    `jumps seen ${padStat.jumps}   caught between frames ${padStat.rescued}`,
+    `data age at press: last ${ms(padStat.last)}  avg ${ms(avg)}`,
+    g ? `stick ${(g.axes[0] || 0).toFixed(2)}  sampler ${PAD.timer ? 'on' : 'off'}` : '',
+  ];
+  ctx.save(); ctx.font = 'bold 6px ui-monospace, Menlo, Consolas, monospace';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(4, 20, 196, 30);
+  ctx.fillStyle = '#7fffd4'; lines.forEach((t, i) => ctx.fillText(t, 7, 22 + i * 7));
+  ctx.restore();
+}
 function drawDebug() {
   const p = players[0];
   ctx.strokeStyle = '#0f0'; ctx.lineWidth = 0.5;
@@ -2983,6 +3039,7 @@ function render() {
   if (state === 'gameover') drawGameOver();
   if (state === 'title') { drawTitle(); drawVersion(); }
   if (DEBUG) drawDebug();
+  if (PADTEST) drawPadTest();
   ctx.restore();
 
   if (showTouch()) { ctx.setTransform(d, 0, 0, d, 0, 0); drawControls(); }
